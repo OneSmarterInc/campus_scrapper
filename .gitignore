@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+results/
+*.xlsx
+!campus_sources/*.xlsx
+html_dump/
+.pytest_cache/
+tests_campus/site/
+*_sites/

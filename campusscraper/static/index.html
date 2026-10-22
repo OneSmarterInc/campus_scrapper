@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CampusScraper</title>
+<style>
+:root { --ink:#13232b; --muted:#5b6b73; --line:#d9e1e4; --bg:#f4f7f8; --card:#fff; --accent:#0f6e6e; --accent-2:#0b5252; --bad:#a8322d; --ok:#1d7a3c; }
+* { box-sizing:border-box; }
+body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+header { background:#123a44; color:#fff; padding:22px 24px; }
+header h1 { margin:0; font-size:22px; } header p { margin:4px 0 0; color:#c8dde0; font-size:14px; }
+main { max-width:1280px; margin:0 auto; padding:20px 16px 60px; display:grid; gap:16px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; }
+h2 { margin:0 0 12px; font-size:17px; }
+label { display:block; font-weight:600; font-size:13px; margin:0 0 4px; }
+textarea, input, select { width:100%; padding:9px 10px; border:1px solid #b9c6ca; border-radius:7px; font:inherit; background:#fff; }
+textarea { min-height:70px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-top:12px; }
+.check { display:flex; gap:8px; align-items:center; font-weight:400; margin-top:24px; } .check input { width:auto; }
+button { background:var(--accent); color:#fff; border:0; padding:10px 18px; border-radius:7px; font:inherit; font-weight:600; cursor:pointer; }
+button:hover { background:var(--accent-2); } button.secondary { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+button:disabled { opacity:.5; cursor:not-allowed; }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px; }
+.hint { color:var(--muted); font-size:13px; margin:6px 0 0; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
+.stat { background:var(--bg); border-radius:8px; padding:10px 12px; } .stat b { display:block; font-size:22px; }
+.stat span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+.bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin:12px 0; } .bar i { display:block; height:100%; background:var(--accent); width:0; transition:width .4s; }
+.log { font:12px/1.5 ui-monospace,Consolas,monospace; max-height:220px; overflow:auto; background:#0f1d22; color:#cfe3e6; border-radius:8px; padding:10px; white-space:pre; }
+.log .x { color:#ff9b8f; } .log .p { color:#8fe3a5; } .log .l { color:#9cc8ff; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { background:var(--bg); position:sticky; top:0; }
+.tablewrap { max-height:560px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+.tablewrap.sites { max-height:340px; overflow-y:scroll; }
+th { z-index:1; }
+td.contact { white-space:nowrap; font-weight:600; } td.muted { color:var(--muted); font-size:12px; }
+.ok { color:var(--ok); } .warn { color:#9a6700; } .bad { color:var(--bad); }
+.pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; background:#e3efef; color:var(--accent-2); }
+.state { font-weight:700; } .state.failed { color:var(--bad); } .state.done { color:var(--ok); } .state.paused { color:#9a6700; }
+pre.json { background:var(--bg); padding:12px; border-radius:8px; overflow:auto; max-height:420px; font-size:12px; }
+a { color:var(--accent); }
+@media (prefers-color-scheme: dark) {
+  :root { --ink:#e3ecee; --muted:#9db0b5; --line:#2c3a3f; --bg:#12191c; --card:#1a2327; }
+  textarea, input, select { background:#11181b; color:var(--ink); border-color:#33454b; }
+  button.secondary { background:transparent; } .pill { background:#1f3337; color:#9fd6d6; }
+}
+.grid { align-items:end; }
+main { grid-template-columns:minmax(0,1fr); } .card { min-width:0; }
+.tablewrap table { min-width:720px; }
+.msg { margin:8px 0 0; font-size:13px; min-height:0; } .msg:empty { display:none; }
+.msg.bad { color:var(--bad); font-weight:600; } .msg.ok { color:var(--ok); } .msg.info { color:var(--muted); }
+.source-label { font-weight:400; color:var(--muted); font-size:13px; margin-left:6px; }
+td.empty { text-align:center; color:var(--muted); padding:18px; }
+.summary dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:8px 0; font-size:14px; }
+.summary dt { color:var(--muted); } .summary dd { margin:0; }
+details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-top:8px; }
+@media (prefers-color-scheme: dark) {
+  button.secondary { color:#7fd8d2; border-color:#3d9c97; } :root { --ok:#5cc985; --bad:#ff8a80; }
+  a, details summary { color:#7fd8d2; }
+}
+</style>
+</head>
+<body>
+<header><h1>CampusScraper</h1><p>Give a college website, faculty page, department page or one faculty profile. Finds faculty and the college's student offices (placement, higher studies, student chapters, alumni) using rules only, no API key.</p></header>
+<main>
+<section class="card">
+  <h2>Crawl a college list (Excel)</h2>
+  <p class="hint" style="margin-top:0">One row per college in the standard template. The crawler stays on the websites in your file; there is no separate allow-list to edit.</p>
+  <div class="row" style="margin-top:6px">
+    <button class="secondary" type="button" id="b-template">Download blank template</button>
+    <input type="file" id="b-file" accept=".xlsx,.csv" style="flex:1;min-width:240px">
+    <button id="b-check" class="secondary" type="button">Check file</button>
+  </div>
+  <p class="msg" id="b-msg" role="status"></p>
+  <div id="b-check-out" hidden style="margin-top:12px"></div>
+  <div class="grid">
+    <div><label for="b-pages">Pages per college</label><input id="b-pages" type="number" value="150" min="1" max="5000"></div>
+    <div><label for="b-delay">Delay between requests (s)</label><input id="b-delay" type="number" value="1.5" step="0.5" min="0"></div>
+    <div><label for="b-render">JavaScript / firewalled sites</label><select id="b-render"><option value="auto">Auto browser</option><option value="never">Never</option><option value="always">Always browser</option></select></div>
+    <div><label for="b-departments">Departments (blank = all)</label><input id="b-departments" placeholder="CSE, IT, ECE"></div>
+    <label class="check"><input type="checkbox" id="b-offices" checked> Student offices</label>
+    <label class="check"><input type="checkbox" id="b-all"> CSV: everyone</label>
+    <label class="check"><input type="checkbox" id="b-sitemap" checked> Use sitemap.xml</label>
+  </div>
+  <div class="row"><button id="b-start" type="button">Start batch</button><button id="b-pause" class="secondary" type="button" disabled>Pause</button><button id="b-stop" class="secondary" type="button" disabled>Stop</button>
+    <span class="hint" id="b-status"></span></div>
+  <div id="b-progress" hidden>
+    <div class="bar"><i id="b-bar"></i></div>
+    <div class="stats">
+      <div class="stat"><span>College</span><b id="b-idx">0/0</b></div>
+      <div class="stat"><span>Pages (this college)</span><b id="b-pagesnow">0</b></div>
+      <div class="stat"><span>Faculty (this college)</span><b id="b-onconow">0</b></div>
+      <div class="stat"><span>Elapsed</span><b id="b-time">0s</b></div>
+    </div>
+    <p class="hint" id="b-current"></p>
+    <div class="tablewrap sites" id="b-wrap" style="margin-top:10px"><table>
+      <thead><tr><th>Row</th><th>College</th><th>Status</th><th>Pages</th><th>Faculty</th><th>Student offices</th><th>With own phone</th><th>With own email</th><th>With any contact</th><th>Note</th></tr></thead>
+      <tbody id="b-sites"></tbody></table></div>
+    <div class="row" id="b-dl" hidden><button type="button" id="b-dl-btn">Download combined Excel</button>
+      <button type="button" class="secondary" id="b-show">Show results below</button><span class="hint" id="b-totals"></span></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Crawl one website</h2>
+  <label for="urls">Start URL(s), one per line</label>
+  <textarea id="urls" placeholder="https://www.college.ac.in/faculty"></textarea>
+  <div class="grid">
+    <div><label for="max_pages">Max pages</label><input id="max_pages" type="number" value="200" min="1" max="5000"></div>
+    <div><label for="depth">Max link depth</label><input id="depth" type="number" value="4" min="0" max="10"></div>
+    <div><label for="delay">Delay between requests (s)</label><input id="delay" type="number" value="1.5" step="0.5" min="0"></div>
+    <div><label for="render">JavaScript pages</label><select id="render"><option value="auto">Auto (if Playwright installed)</option><option value="never">Never render</option><option value="always">Always render</option></select></div>
+    <div><label for="departments">Departments (blank = all)</label><input id="departments" placeholder="CSE, IT, ECE"></div>
+    <label class="check"><input type="checkbox" id="offices" checked> Student offices</label>
+    <label class="check"><input type="checkbox" id="all"> CSV: everyone</label>
+    <label class="check"><input type="checkbox" id="sitemap" checked> Use sitemap.xml</label>
+    <label class="check"><input type="checkbox" id="subdomains"> Include subdomains</label>
+  </div>
+  <div class="row"><button id="start">Start crawl</button><button id="pause" class="secondary" disabled>Pause</button><button id="stop" class="secondary" disabled>Stop</button>
+  <span class="hint">robots.txt is always respected. Only the same website is crawled.</span></div>
+  <p class="msg" id="msg" role="status"></p>
+</section>
+
+<section class="card" id="progress-card" hidden>
+  <h2>Progress <span id="state" class="state"></span></h2>
+  <div class="stats">
+    <div class="stat"><span>Pages fetched</span><b id="s-fetched">0</b></div>
+    <div class="stat"><span>Queued</span><b id="s-queued">0</b></div>
+    <div class="stat"><span>People found</span><b id="s-doctors">0</b></div>
+    <div class="stat"><span>Faculty</span><b id="s-onco">0</b></div>
+    <div class="stat"><span>Student offices</span><b id="s-offices">0</b></div>
+    <div class="stat"><span>Elapsed</span><b id="s-time">0s</b></div>
+  </div>
+  <div class="bar"><i id="bar"></i></div>
+  <div class="log" id="log"></div>
+  <div class="row" id="downloads" hidden>
+    <button type="button" id="dl-xlsx">Download Excel</button>
+    <button type="button" class="secondary" id="dl-csv">CSV</button>
+    <button type="button" class="secondary" id="dl-json">JSON</button>
+    <span class="hint">While the crawl runs, these give what has been found so far.</span>
+  </div>
+  <p class="hint" id="error"></p>
+</section>
+
+<section class="card" id="results-card" hidden>
+  <h2>Results <span class="pill" id="count"></span><span class="source-label" id="results-from"></span></h2>
+  <input id="filter" placeholder="Filter by name, college, department or research area">
+  <div class="tablewrap" style="margin-top:10px"><table>
+    <thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Email</th><th>Phone</th><th>Department / office contact</th><th>College</th><th>Qualifications</th><th>Research areas</th><th>Profiles</th><th>Source</th></tr></thead>
+    <tbody id="rows"></tbody></table></div>
+  <h2 style="margin-top:18px">Student offices <span class="pill" id="office-count"></span></h2>
+  <p class="hint" style="margin-top:0">Office contacts and faculty/staff coordinators. Lines about individual students are left out; the last column counts them.</p>
+  <div class="tablewrap" style="margin-top:8px;max-height:380px"><table>
+    <thead><tr><th>Type</th><th>Office / body</th><th>Emails</th><th>Phones</th><th>Coordinators</th><th>Higher-studies figures</th><th>Student lines left out</th><th>Page</th></tr></thead>
+    <tbody id="office-rows"></tbody></table></div>
+</section>
+
+<section class="card">
+  <h2>Test one page</h2>
+  <p class="hint">Check what the extractor reads from a single URL before running a full crawl.</p>
+  <div class="row" style="margin-top:6px"><input id="page-url" placeholder="https://www.college.ac.in/faculty/dr-name" style="flex:1"><button id="page-btn" class="secondary">Test page</button></div>
+  <div class="summary" id="page-sum" hidden></div>
+  <details id="page-raw" hidden><summary>Show raw data</summary><pre class="json" id="page-out"></pre></details>
+</section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
