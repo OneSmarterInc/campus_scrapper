@@ -7,7 +7,7 @@ function fmtDur(a, b) {
   if (!a) return ''; const s = Math.max(0, Math.round(((b || Date.now() / 1000) - a)));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
 }
-const STATE_CLASS = { done: 'ok', running: 'ok', paused: 'warn', interrupted: 'warn', stopped: 'warn', failed: 'bad' };
+const STATE_CLASS = { done: 'ok', running: 'ok', paused: 'warn', stopping: 'warn', interrupted: 'warn', stopped: 'warn', failed: 'bad' };
 function stateCell(s) { return `<span class="${STATE_CLASS[s] || ''}"><b>${esc(s)}</b></span>`; }
 
 function show(view) {
@@ -57,7 +57,7 @@ async function loadRuns() {
   const r = await api('/api/runs');
   if (!r.ok) { say($('r-msg'), r.error, 'bad'); return; }
   $('r-rows').innerHTML = r.data.runs.map(x => {
-    const live = x.state === 'running' || x.state === 'paused';
+    const live = x.state === 'running' || x.state === 'paused' || x.state === 'stopping';
     const acts = [];
     if (live) acts.push(`<button data-act="open" data-id="${x.id}" data-kind="${x.kind}">Open</button>`);
     acts.push(`<button class="secondary" data-act="dl" data-id="${x.id}">Excel</button>`);

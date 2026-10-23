@@ -171,9 +171,9 @@ class Crawler:
                  stop_event: threading.Event | None = None, pause_event: threading.Event | None = None):
         self.cfg = cfg.validate()
         self.pause_event = pause_event or threading.Event()  # set = paused
-        self.fetcher = Fetcher(cfg)
-        self.progress = progress or (lambda e: None)
         self.stop_event = stop_event or threading.Event()
+        self.fetcher = Fetcher(cfg, self.stop_event)
+        self.progress = progress or (lambda e: None)
         self._frontier: list[tuple[float, int, str, int, bool]] = []
         self._seq = itertools.count()
         self._queued: set[str] = set()

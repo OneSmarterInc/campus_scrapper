@@ -185,6 +185,8 @@ def _rows(docs, limit: int = 3000) -> list[dict]:
 
 
 def _state(job) -> str:
+    if job.state == "running" and job.stop.is_set():
+        return "stopping"  # Stop was pressed; pages already in flight are finishing
     return "paused" if job.state == "running" and job.pause.is_set() else job.state
 
 

@@ -135,7 +135,12 @@ $('start').onclick = async () => {
   showRows([], 'this website crawl');
   attachJob(r.data.id);
 };
-$('stop').onclick = async () => { if (jobId) await postJSON(`/api/jobs/${jobId}/stop`); $('stop').disabled = true; $('pause').disabled = true; };
+$('stop').onclick = async () => {
+  if (jobId) await postJSON(`/api/jobs/${jobId}/stop`);
+  $('stop').disabled = true; $('pause').disabled = true;
+  $('start').disabled = false;  // a new crawl can start while the old one finishes its last pages
+  say($('msg'), 'Stopping: pages already being fetched finish, everything found is kept. You can start a new crawl now.', 'info');
+};
 $('pause').onclick = () => jobId && togglePause($('pause'), `/api/jobs/${jobId}`, $('msg'));
 for (const fmt of ['xlsx', 'csv', 'json'])
   $('dl-' + fmt).onclick = () => jobId && download(`/api/jobs/${jobId}/download.${fmt}`, $('error'), $('dl-' + fmt));
@@ -158,6 +163,7 @@ async function poll() {
   if (atBottom) $('log').scrollTop = $('log').scrollHeight;  // follow the log unless the user scrolled up
   if (resultsFrom === 'this website crawl' || !resultsFrom) showRows(j.doctors, 'this website crawl', j.offices);
   $('pause').textContent = j.state === 'paused' ? 'Resume' : 'Pause';
+  if (j.state === 'stopping') { $('start').disabled = false; $('stop').disabled = true; $('pause').disabled = true; return; }
   if (j.state !== 'running' && j.state !== 'paused') {
     clearInterval(timer); setJobButtons(false);
     if (j.error) say($('error'), j.error, 'bad');
@@ -243,7 +249,12 @@ $('b-start').onclick = async () => {
   say($('b-msg'), `${r.data.colleges} colleges queued` + (r.data.problems.length ? `, ${r.data.problems.length} rows skipped` : '') + '.', 'ok');
   attachBatch(r.data.id);
 };
-$('b-stop').onclick = async () => { if (batchId) await postJSON(`/api/batch/${batchId}/stop`); $('b-stop').disabled = true; $('b-pause').disabled = true; };
+$('b-stop').onclick = async () => {
+  if (batchId) await postJSON(`/api/batch/${batchId}/stop`);
+  $('b-stop').disabled = true; $('b-pause').disabled = true;
+  $('b-start').disabled = false;
+  say($('b-msg'), 'Stopping: colleges being crawled finish their current pages, everything found is kept.', 'info');
+};
 $('b-pause').onclick = () => batchId && togglePause($('b-pause'), `/api/batch/${batchId}`, $('b-msg'));
 $('b-dl-btn').onclick = () => batchId && download(`/api/batch/${batchId}/download.xlsx`, $('b-msg'), $('b-dl-btn'));
 $('b-show').onclick = async () => { await loadBatchDoctors(); $('results-card').scrollIntoView({ behavior: 'smooth' }); };
@@ -261,13 +272,14 @@ async function pollBatch() {
   $('b-current').textContent = j.state === 'running' ? `Now crawling: ${j.current}`
     : j.state === 'paused' ? `Paused at: ${j.current} (press Resume to carry on)` : `Batch ${j.state}.`;
   $('b-pause').textContent = j.state === 'paused' ? 'Resume' : 'Pause';
+  if (j.state === 'stopping') { $('b-start').disabled = false; $('b-stop').disabled = true; $('b-pause').disabled = true; }
   const wrap = $('b-wrap'), keep = wrap.scrollTop;  // keep the user's scroll position on refresh
   $('b-sites').innerHTML = j.sites.length ? j.sites.map(s => `<tr><td>${s.row}</td><td>${esc(s.institution)}</td><td class="${(s.status === 'error' || s.status === 'failed') ? 'bad' : 'ok'}">${esc(s.status)}</td>
     <td>${s.pages}</td><td>${s.faculty}</td><td>${s.offices}</td><td>${s.with_phone}</td><td>${s.with_email}</td><td>${s.with_any_contact}</td><td class="muted">${esc(s.note)}</td></tr>`).join('')
     : `<tr><td colspan="10" class="empty">First college in progress…</td></tr>`;
   wrap.scrollTop = keep;
   if (resultsFrom === 'the college list batch' && (++batchPolls % 3 === 0)) loadBatchDoctors();  // refresh shown doctors
-  if (j.state !== 'running' && j.state !== 'paused') {
+  if (j.state !== 'running' && j.state !== 'paused' && j.state !== 'stopping') {
     clearInterval(batchTimer); setBatchButtons(false);
     if (j.error) say($('b-msg'), j.error, 'bad');
     if (j.stats) {

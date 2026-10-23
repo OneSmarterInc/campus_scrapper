@@ -83,8 +83,9 @@ def _is_public(host: str) -> bool:
 
 
 class Fetcher:
-    def __init__(self, config: ScrapeConfig):
+    def __init__(self, config: ScrapeConfig, stop_event: threading.Event | None = None):
         self.cfg = config
+        self.stop_event = stop_event or threading.Event()
         self.client = httpx.Client(
             follow_redirects=True,
             timeout=httpx.Timeout(config.timeout_seconds, connect=15.0),
@@ -194,6 +195,10 @@ class Fetcher:
             raise FetchBlocked(f"robots.txt disallows this URL [robots.txt HTTP {status}]")
 
     # -- transport ---------------------------------------------------------
+    def _sleep(self, seconds: float) -> None:
+        """Sleep that ends early when the run is stopped."""
+        self.stop_event.wait(timeout=max(0.0, seconds))
+
     def _pace(self, url: str) -> None:
         host = urlsplit(url).netloc
         delay = max(self.cfg.delay_seconds, self._robots.get(self._origin(url), AllowAll()).crawl_delay)
@@ -203,7 +208,7 @@ class Fetcher:
             due = max(now, self._next_time.get(host, now))
             self._next_time[host] = due + delay
         if due > now:
-            time.sleep(due - now)
+            self._sleep(due - now)
 
     def _raw_get(self, url: str) -> httpx.Response:
         self._pace(url)
@@ -229,17 +234,19 @@ class Fetcher:
             return self._via_browser(url, url, 0, "")
         last_error = None
         for attempt in range(self.cfg.retries + 1):
+            if self.stop_event.is_set():
+                return Page(url, url, 0, "", error="stopped")
             try:
                 resp = self._raw_get(url)
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
-                if _is_ssl_or_proxy(exc):
+                if _is_ssl_or_proxy(exc) or self.stop_event.is_set():
                     break  # retrying the same client will not help
-                time.sleep(min(10, 2 ** attempt))
+                self._sleep(min(10, 2 ** attempt))
                 continue
             if resp.status_code in (429, 500, 502, 503, 504) and attempt < self.cfg.retries:
                 retry_after = resp.headers.get("retry-after", "")
-                time.sleep(min(30, float(retry_after)) if retry_after.isdigit() else 2 ** (attempt + 1))
+                self._sleep(min(30, float(retry_after)) if retry_after.isdigit() else 2 ** (attempt + 1))
                 continue
             final = normalize_url(str(resp.url))
             ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -298,13 +305,15 @@ class Fetcher:
         return self._renderer is not None
 
     def _browser_get(self, url: str, expand: bool = True):
-        if not self._browser_ok():
-            return None
+        if self.stop_event.is_set() or not self._browser_ok():
+            return None  # when the run is stopped, queued browser fetches are skipped so Stop acts fast
         try:
             self._pace(url)
+            if self.stop_event.is_set():
+                return None
             with self._lock:
                 self.requests_made += 1
-            return self._browser_thread.submit(self._renderer.fetch, url, expand=expand).result()
+            return self._browser_thread.submit(self._renderer.fetch, url, expand=expand).result(timeout=120)
         except Exception as exc:
             log.warning("browser fetch failed for %s: %s", url, exc)
             return None
