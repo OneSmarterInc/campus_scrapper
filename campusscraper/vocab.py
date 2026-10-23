@@ -111,6 +111,14 @@ NAME_STOP = {
     "Specialization", "Specialisation", "Qualification", "Qualifications", "Designation", "Publications", "Google",
     "Scholar", "Orcid", "Scopus", "Vidwan", "Linkedin", "Home", "Page", "Here", "Now", "Today", "Programme", "Program",
     "Trust", "Foundation", "Award", "Retd",
+    # Site navigation and page headings that look like two capitalised words ("About Us", "Organization Chart").
+    "About", "Us", "Organization", "Organisation", "Chart", "Vision", "Mission", "Message", "Desk", "Welcome",
+    "History", "Gallery", "Photo", "Photos", "Download", "Downloads", "Notice", "Notices", "Circular", "Circulars",
+    "Committee", "Committees", "Admission", "Admissions", "Fee", "Fees", "Structure", "Login", "Portal", "Library",
+    "Hostel", "Sports", "Events", "Event", "News", "Result", "Results", "Syllabus", "Academic", "Academics",
+    "Campus", "Infrastructure", "Governing", "Body", "Grievance", "Feedback", "Mandatory", "Disclosure", "Code",
+    "Conduct", "Scholarship", "Scholarships", "Examination", "Exam", "Exams", "Anti", "Ragging", "Overview",
+    "Objectives", "Outcomes", "Activities", "Achievements", "Recruitment", "Tender", "Tenders", "Facilities",
 }
 NOT_A_PERSON = {
     "award", "awards", "medal", "oration", "lecture", "memorial", "prize", "fellowship", "scholarship", "trophy",

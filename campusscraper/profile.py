@@ -186,8 +186,10 @@ def plain_person_name(text: str) -> str | None:
     words = text.split()
     if not 2 <= len(words) <= 5 or len(text) > 50:
         return None
-    if any(w.strip(".,") in NAME_STOP for w in words):
-        return None
+    for w in words:
+        bare = w.strip(".,")
+        if bare in NAME_STOP or (bare.endswith("'s") and bare[:-2] in NAME_STOP):
+            return None  # "About Us", "Principal's Message": a page heading, not a person
     if not all(re.match(r"^[A-Z][a-zA-Z'.\-]*$", w) for w in words):
         return None
     if all(w.isupper() and len(w) > 1 for w in words):

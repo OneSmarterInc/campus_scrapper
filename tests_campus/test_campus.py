@@ -338,3 +338,16 @@ def test_alumni_are_never_people(site_url):
     home = extract_page(Page(site_url + "/", site_url + "/", 200,
                              (__import__("pathlib").Path(__file__).parent / "site" / "index.html").read_text()))
     assert {d.get("name") for d in home.doctors} == {"Dr. Anitha Rao", "Prof. K. Srinivas"}
+
+
+def test_page_headings_are_not_people():
+    from campusscraper.profile import plain_person_name
+    for text in ("About Us", "Organization Chart", "Principal's Message", "Vision Mission", "Photo Gallery",
+                 "Anti Ragging", "Fee Structure", "Governing Body", "Academic Calendar"):
+        assert plain_person_name(text) is None, text
+    html = ("<html><body><h1>Administration</h1><div class='grid'>"
+            "<div class='c'><h4>About Us</h4><p>Principal</p><a href='/about-us'>read</a></div>"
+            "<div class='c'><h4>Organization Chart</h4><p>Principal</p><a href='/org-chart'>read</a></div>"
+            "<div class='c'><h4>Smt. M. V. Patil</h4><p>Principal</p></div></div></body></html>")
+    pr = extract_page(Page("https://c.example/administration", "https://c.example/administration", 200, html))
+    assert {d.get("name") for d in pr.doctors} == {"Smt. M. V. Patil"}
