@@ -7,23 +7,37 @@ sheet only.
 from __future__ import annotations
 
 import re
+import threading
 from urllib.parse import urlsplit
 
 from .models import PersonRecord
 from .vocab import DEPARTMENTS, NON_TEACHING, TEACHING_WORDS
 
-# Set by the crawler from ScrapeConfig.departments. Empty = every department counts.
-_TARGETS: list[str] = []
+# Set by each crawler thread from ScrapeConfig.departments. Empty = every department counts.
+# Per thread: colleges crawled at the same time can have different department filters.
+_LOCAL = threading.local()
+
+
+class _Targets:
+    def __iter__(self):
+        return iter(getattr(_LOCAL, "targets", []))
+
+    def __bool__(self):
+        return bool(getattr(_LOCAL, "targets", []))
+
+
+_TARGETS = _Targets()
 
 
 def set_targets(departments: list[str] | None) -> None:
-    """Departments to keep, as typed by the user ('CSE', 'computer science, IT')."""
-    _TARGETS.clear()
+    """Departments to keep in this thread, as typed by the user ('CSE', 'computer science, IT')."""
+    out = []
     for d in departments or []:
         for part in re.split(r"[,;/|]", d):
             part = part.strip().lower()
             if part:
-                _TARGETS.append(part)
+                out.append(part)
+    _LOCAL.targets = out
 
 
 def targets() -> list[str]:

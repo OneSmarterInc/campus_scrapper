@@ -4,6 +4,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -106,13 +107,20 @@ class Fetcher:
         self._lock = threading.Lock()
         self._renderer = None
         self._renderer_error: str | None = None
+        # The browser library works from one thread only; every browser call runs on this one.
+        self._browser_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="browser")
+        self._robots_lock = threading.RLock()  # one robots.txt fetch per site, even with parallel workers
         self.browser_hosts: set[str] = set()   # sites that only answer real browsers
         self.requests_made = 0
 
     def close(self) -> None:
         self.client.close()
         if self._renderer:
-            self._renderer.close()
+            try:
+                self._browser_thread.submit(self._renderer.close).result(timeout=60)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("browser close failed: %s", exc)
+        self._browser_thread.shutdown(wait=False)
 
     # -- policy ------------------------------------------------------------
     def _origin(self, url: str) -> str:
@@ -122,6 +130,12 @@ class Fetcher:
     def robots_for(self, url: str) -> RobotsPolicy:
         """robots.txt per RFC 9309: 2xx = obey rules, 4xx = no rules, 5xx/network = treat as disallow-all."""
         origin = self._origin(url)
+        if origin in self._robots or not self.cfg.respect_robots:
+            return self._robots.get(origin) or AllowAll()
+        with self._robots_lock:
+            return self._robots_for(origin)
+
+    def _robots_for(self, origin: str) -> RobotsPolicy:
         if not self.cfg.respect_robots:
             return AllowAll()
         if origin in self._robots:
@@ -193,7 +207,8 @@ class Fetcher:
 
     def _raw_get(self, url: str) -> httpx.Response:
         self._pace(url)
-        self.requests_made += 1
+        with self._lock:
+            self.requests_made += 1
         with self.client.stream("GET", url) as resp:
             body = bytearray()
             for chunk in resp.iter_bytes():
@@ -270,12 +285,16 @@ class Fetcher:
         if self.cfg.render == "never":
             return False
         if self._renderer is None and self._renderer_error is None:
-            try:
+            def start():
                 from .render import BrowserRenderer
-                self._renderer = BrowserRenderer(self.cfg)
-            except Exception as exc:  # Playwright missing or browser not installed
-                self._renderer_error = str(exc)
-                log.warning("Browser unavailable: %s", exc)
+                return BrowserRenderer(self.cfg)
+            with self._lock:
+                if self._renderer is None and self._renderer_error is None:
+                    try:
+                        self._renderer = self._browser_thread.submit(start).result()
+                    except Exception as exc:  # Playwright missing or browser not installed
+                        self._renderer_error = str(exc)
+                        log.warning("Browser unavailable: %s", exc)
         return self._renderer is not None
 
     def _browser_get(self, url: str, expand: bool = True):
@@ -283,8 +302,9 @@ class Fetcher:
             return None
         try:
             self._pace(url)
-            self.requests_made += 1
-            return self._renderer.fetch(url, expand=expand)
+            with self._lock:
+                self.requests_made += 1
+            return self._browser_thread.submit(self._renderer.fetch, url, expand=expand).result()
         except Exception as exc:
             log.warning("browser fetch failed for %s: %s", url, exc)
             return None

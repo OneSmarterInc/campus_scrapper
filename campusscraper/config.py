@@ -13,6 +13,8 @@ DEFAULT_USER_AGENT = (
 @dataclass
 class ScrapeConfig:
     max_pages: int = 200            # total pages fetched per run
+    workers: int = 3                # pages fetched at the same time; the gap between requests to one site stays delay_seconds
+    patience: int = 80              # stop a site after this many pages in a row add nobody new (0 = never)
     max_depth: int = 4              # link hops from the start URL
     delay_seconds: float = 1.5      # minimum gap between requests to one host
     timeout_seconds: float = 25.0
@@ -39,6 +41,10 @@ class ScrapeConfig:
             raise ValueError("max_pages must be 1..20000")
         if not 0 <= self.max_depth <= 10:
             raise ValueError("max_depth must be 0..10")
+        if not 1 <= self.workers <= 8:
+            raise ValueError("workers must be 1..8")
+        if self.patience < 0:
+            raise ValueError("patience must be >= 0")
         if self.delay_seconds < 0:
             raise ValueError("delay_seconds must be >= 0")
         return self

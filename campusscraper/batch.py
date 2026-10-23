@@ -13,6 +13,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Callable
 
 from .config import ScrapeConfig
@@ -70,8 +71,10 @@ def snapshot_xlsx(live: dict, out: str | Path) -> Path:
     pages = list(live.get("pages") or [])
     summary = [dict(r) for r in live.get("summary") or []]
     offices = [OfficeRecord.from_full_dict(o.to_full_dict()) for o in list(live.get("offices") or [])]
-    crawler, src = live.get("crawler"), live.get("src")
-    if crawler is not None and src is not None:
+    running = list((live.get("active") or {}).values())
+    if not running and live.get("crawler") is not None and live.get("src") is not None:
+        running = [(live["crawler"], live["src"])]
+    for crawler, src in running:
         current = [PersonRecord.from_full_dict(d.to_full_dict()) for d in list(crawler.merger.records)]
         demote_sitewide(current, {k: set(v) for k, v in list(crawler.value_pages.items())})
         for c in current:
@@ -84,7 +87,7 @@ def snapshot_xlsx(live: dict, out: str | Path) -> Path:
             o.source_institution = src.institution
         merge_offices(offices, cur_offices)
     demote_shared(merger.records)
-    if crawler is not None and src is not None:  # counted after shared desk numbers are moved
+    for crawler, src in running:  # counted after shared desk numbers are moved
         mine = [d for d in merger.records if d.source_institution == src.institution]
         fac = [d for d in mine if d.is_relevant]
         summary.append({"row": src.row, "institution": src.institution, "status": "in progress",
@@ -113,10 +116,16 @@ def snapshot_xlsx(live: dict, out: str | Path) -> Path:
 CONTACT_FIELDS = ("phone", "email", "contact_phone", "contact_email")
 
 
+def _hosts(src: Source) -> set[str]:
+    return {(urlsplit(u).hostname or "").removeprefix("www.") for u in src.urls}
+
+
 def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_site_pages: int,
               resume: bool = True, progress: Callable[[dict], None] | None = None,
               stop_event: threading.Event | None = None, live: dict | None = None,
-              pause_event: threading.Event | None = None) -> Path:
+              pause_event: threading.Event | None = None, parallel_sites: int = 3) -> Path:
+    """Crawl every college. Up to ``parallel_sites`` colleges run at the same time; two rows on the same
+    website never run together, so each site still gets one request per delay_seconds."""
     progress = progress or (lambda e: None)
     stop_event = stop_event or threading.Event()
     out = Path(out)
@@ -126,15 +135,24 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
     pages: list[PageLog] = []
     summary: list[dict] = []
     offices: list[OfficeRecord] = []
+    active: dict[int, tuple] = {}          # row -> (crawler, source) being crawled now
     t0 = time.time()
+    lock = threading.Lock()
     if live is not None:  # lets the web UI write a partial Excel at any time
         live.update(merger=merger, pages=pages, summary=summary, sources=sources, crawler=None, src=None, t0=t0,
-                    offices=offices)
-    for i, src in enumerate(sources, 1):
-        while pause_event is not None and pause_event.is_set() and not stop_event.is_set():
-            time.sleep(0.3)
-        if stop_event.is_set():
-            break
+                    offices=offices, active=active)
+    pending = list(enumerate(sources, 1))
+    busy_hosts: set[str] = set()
+
+    def next_source():
+        """The next college whose website is not being crawled by another worker. Lock held."""
+        for k, (i, src) in enumerate(pending):
+            if not (_hosts(src) & busy_hosts):
+                busy_hosts.update(_hosts(src))
+                return pending.pop(k)
+        return None
+
+    def crawl_one(i: int, src: Source) -> None:
         slug = f"{_slug(src.institution)}-r{src.row}"
         jpath = site_dir / f"{slug}.json"
         progress({"event": "site_start", "index": i, "total": len(sources), "institution": src.institution, "urls": src.urls})
@@ -152,8 +170,10 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
             })
             try:
                 crawler = Crawler(cfg, progress, stop_event, pause_event)
-                if live is not None:
-                    live.update(crawler=crawler, src=src)
+                with lock:
+                    active[src.row] = (crawler, src)
+                    if live is not None:
+                        live.update(crawler=crawler, src=src)
                 res = crawler.run(src.urls)
                 data = {"institution": src.institution, "urls": src.urls, "stats": res.stats,
                         "doctors": [d.to_full_dict() for d in res.doctors],
@@ -172,32 +192,72 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
             d.source_institution = src.institution
             if not d.get("institution"):  # the name from the college list beats an empty cell
                 d.set("institution", src.institution, "college list", "College Name column of the uploaded list", d.source_url)
-            merger.add(d)
         site_offices = [OfficeRecord.from_full_dict(o) for o in data.get("offices") or []]
         for o in site_offices:
             o.source_institution = src.institution
             o.institution = o.institution or src.institution
-        merge_offices(offices, site_offices)
-        pages.extend(PageLog(**p) for p in data["pages"])
-        if live is not None:
-            live.update(crawler=None, src=None)
         fac = [d for d in docs if d.is_relevant]
         failed = [p for p in data["pages"] if p["page_type"] == "error"]
-        robots = sum(1 for p in failed if "robots.txt" in (p.get("note") or ""))
         note = data.get("error") or ""
         if not note and failed:
             note = _failure_note(failed, len(data["pages"]))
+        if data["stats"].get("stopped_no_new_people"):
+            note = (note + "; " if note else "") + "stopped early: many pages in a row added nobody new"
         if src.warnings:
             note = (note + "; " if note else "") + "; ".join(src.warnings)
-        summary.append({
+        site = {
             "row": src.row, "institution": src.institution, "status": status, "pages": len(data["pages"]),
             "people": len(docs), "faculty": len(fac), "offices": len(site_offices),
             "with_phone": sum(1 for d in fac if d.get("phone")),
             "with_email": sum(1 for d in fac if d.get("email")),
-            "with_any_contact": sum(1 for d in fac if any(d.get(f) for f in ("phone", "email", "contact_phone", "contact_email"))),
+            "with_any_contact": sum(1 for d in fac if any(d.get(f) for f in CONTACT_FIELDS)),
             "start_urls": " ".join(src.urls), "note": note,
-        })
-        progress({"event": "site_done", **summary[-1]})
+        }
+        with lock:
+            for d in docs:
+                merger.add(d)
+            merge_offices(offices, site_offices)
+            pages.extend(PageLog(**p) for p in data["pages"])
+            summary.append(site)
+            active.pop(src.row, None)
+            if live is not None and live.get("src") is src:
+                nxt = next(iter(active.values()), (None, None))
+                live.update(crawler=nxt[0], src=nxt[1])
+        progress({"event": "site_done", **site})
+
+    def worker() -> None:
+        while True:
+            while pause_event is not None and pause_event.is_set() and not stop_event.is_set():
+                time.sleep(0.3)
+            if stop_event.is_set():
+                return
+            with lock:
+                if not pending:
+                    return
+                job = next_source()
+            if job is None:  # every remaining college shares a website with one being crawled
+                time.sleep(0.2)
+                continue
+            i, src = job
+            try:
+                crawl_one(i, src)
+            finally:
+                with lock:
+                    busy_hosts.difference_update(_hosts(src))
+
+    n = max(1, min(parallel_sites, len(sources)))
+    threads = [threading.Thread(target=worker, daemon=True, name=f"college-{k}") for k in range(n)]
+    for t in threads:
+        t.start()
+    try:
+        for t in threads:
+            while t.is_alive():
+                t.join(0.2)
+    except KeyboardInterrupt:
+        stop_event.set()
+        for t in threads:
+            t.join(60)
+    summary.sort(key=lambda r: r["row"])
     demote_shared(merger.records)
     result = CrawlResult([u for s in sources for u in s.urls], merger.records, pages, offices=offices)
     fac = result.faculty
@@ -208,6 +268,7 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
         "faculty_with_own_email": sum(1 for d in fac if d.get("email")),
         "faculty_with_any_contact": sum(1 for d in fac if any(d.get(f) for f in CONTACT_FIELDS)),
         "seconds": round(time.time() - t0, 1), "stopped_early": stop_event.is_set(),
+        "colleges_at_once": n,
     }
     progress({"event": "batch_done", **result.stats})
     return to_xlsx(result, out, sites=summary)

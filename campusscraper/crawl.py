@@ -19,7 +19,7 @@ from .dom import same_site
 from .extract import extract_page
 from .fetch import Fetcher, normalize_url
 from . import relevance
-from .models import OfficeRecord, PersonRecord, PageResult
+from .models import OfficeRecord, Page, PersonRecord, PageResult
 from .profile import clean_fields
 from .vocab import (
     FOCUS_URL_HINTS, LINK_TEXT_HINTS, LISTING_URL_HINTS, OFFICE_URL_HINTS, PAGINATION_RE, PROFILE_URL_HINTS, SKIP_URL,
@@ -180,7 +180,6 @@ class Crawler:
         self._visited: set[str] = set()
         self.merger = Merger()
         self.offices: list[OfficeRecord] = []
-        relevance.set_targets(cfg.departments)
         self._focus_profile_urls: set[str] = set()
         self.value_pages: dict[str, set[str]] = {}
         self.result_pages: list = []  # phone/email -> pages that show it
@@ -291,67 +290,118 @@ class Crawler:
                                 self.cfg.include_offices and OFFICE_URL_HINTS.search(path)) or any(
                                 p in path for p in self.cfg.extra_profile_patterns if p):
                             self._push(u, 1, from_focus=bool(FOCUS_URL_HINTS.search(path)), start=s)
-        fetched = 0
+        state = {"fetched": 0, "in_flight": 0, "last_new": 0, "patience_stop": False}
         counts = {"profile": 0, "listing": 0, "other": 0, "error": 0}
-        try:
-            while self._frontier and fetched < self.cfg.max_pages and not self.stop_event.is_set():
-                while self.pause_event.is_set() and not self.stop_event.is_set():
-                    time.sleep(0.3)  # paused: keep everything found so far and wait for Resume
-                if self.stop_event.is_set():
-                    break
+        lock = threading.Lock()
+
+        def take():
+            """Next URL to fetch, or None when this worker should stop. Called with the lock held."""
+            while True:
+                if self.stop_event.is_set() or state["fetched"] >= self.cfg.max_pages or state["patience_stop"]:
+                    return None
+                if not self._frontier:
+                    return "" if state["in_flight"] else None  # "" = wait: a page in flight may add links
                 _, _, url, depth, from_focus = heapq.heappop(self._frontier)
                 if _seen_key(url) in self._visited:
                     continue
                 self._visited.add(_seen_key(url))
-                page = self.fetcher.get(url)
-                fetched += 1
-                if page.final_url != url:
-                    self._visited.add(_seen_key(page.final_url))
-                pr: PageResult = extract_page(page)
-                for v in pr.signals.get("page_contacts", []):
-                    self.value_pages.setdefault(v, set()).add(page.final_url)
-                counts[pr.page_type] = counts.get(pr.page_type, 0) + 1
-                note = page.error or ("rendered" if page.rendered else "")
-                result.pages.append(PageLog(page.final_url, page.status, pr.page_type, len(pr.doctors), depth, note))
-                start = next((s for s in starts if same_site(page.final_url, s, self.cfg.include_subdomains)), starts[0])
-                page_focus = bool(FOCUS_URL_HINTS.search(urlsplit(page.final_url).path)) or any(d.is_relevant for d in pr.doctors) or from_focus
-                merge_offices(self.offices, pr.offices)
-                for rec in pr.doctors:
-                    merged = self.merger.add(rec)
-                    if merged.is_relevant and merged.profile_url:
-                        self._focus_profile_urls.add(normalize_url(merged.profile_url))
-                # Follow links.
-                if pr.page_type != "error":
-                    for d in pr.doctors:
-                        if d.page_type == "listing" and d.profile_url:
-                            self._push(d.profile_url, depth + 1, page_focus, "focus_profile" if d.is_relevant else "profile", start)
-                    for u in pr.pagination_links:
-                        self._push(u, depth, page_focus, "pagination", start)
-                    for u in pr.profile_links:
-                        self._push(u, depth + 1, page_focus, "profile", start)
-                    if pr.page_type != "profile":
-                        for u in pr.links:
-                            path = urlsplit(u).path
-                            text = pr.link_texts.get(u, "")
-                            if (LISTING_URL_HINTS.search(path) or FOCUS_URL_HINTS.search(path) or PROFILE_URL_HINTS.search(path)
-                                    or (self.cfg.include_offices and OFFICE_URL_HINTS.search(path + " " + text))
-                                    or LINK_TEXT_HINTS.search(text) or depth == 0):
-                                self._push(u, depth + 1, page_focus or bool(FOCUS_URL_HINTS.search(text)), "", start)
-                self.progress({"event": "page", "url": page.final_url, "type": pr.page_type, "status": page.status,
-                               "doctors_on_page": len(pr.doctors), "fetched": fetched, "queued": len(self._frontier),
-                               "doctors_total": len(self.merger.records),
-                               "faculty": sum(1 for d in self.merger.records if d.is_relevant),
-                               "offices": len(self.offices),
-                               "error": page.error})
+                state["fetched"] += 1
+                state["in_flight"] += 1
+                return url, depth, from_focus
+
+        def handle(url, depth, from_focus, page, pr: PageResult) -> None:
+            """Record one fetched page and queue its links. Called with the lock held."""
+            fetched = state["fetched"]
+            if page.final_url != url:
+                self._visited.add(_seen_key(page.final_url))
+            for v in pr.signals.get("page_contacts", []):
+                self.value_pages.setdefault(v, set()).add(page.final_url)
+            counts[pr.page_type] = counts.get(pr.page_type, 0) + 1
+            note = page.error or ("rendered" if page.rendered else "")
+            result.pages.append(PageLog(page.final_url, page.status, pr.page_type, len(pr.doctors), depth, note))
+            start = next((s for s in starts if same_site(page.final_url, s, self.cfg.include_subdomains)), starts[0])
+            page_focus = bool(FOCUS_URL_HINTS.search(urlsplit(page.final_url).path)) or any(d.is_relevant for d in pr.doctors) or from_focus
+            before = (len(self.merger.records), len(self.offices))
+            merge_offices(self.offices, pr.offices)
+            for rec in pr.doctors:
+                merged = self.merger.add(rec)
+                if merged.is_relevant and merged.profile_url:
+                    self._focus_profile_urls.add(normalize_url(merged.profile_url))
+            if (len(self.merger.records), len(self.offices)) != before:
+                state["last_new"] = fetched
+            elif self.cfg.patience and fetched - state["last_new"] >= self.cfg.patience:
+                state["patience_stop"] = True  # many pages in a row with nobody new: the rest of the site is unlikely to help
+            if pr.page_type != "error":
+                for d in pr.doctors:
+                    if d.page_type == "listing" and d.profile_url:
+                        self._push(d.profile_url, depth + 1, page_focus, "focus_profile" if d.is_relevant else "profile", start)
+                for u in pr.pagination_links:
+                    self._push(u, depth, page_focus, "pagination", start)
+                for u in pr.profile_links:
+                    self._push(u, depth + 1, page_focus, "profile", start)
+                if pr.page_type != "profile":
+                    for u in pr.links:
+                        path = urlsplit(u).path
+                        text = pr.link_texts.get(u, "")
+                        if (LISTING_URL_HINTS.search(path) or FOCUS_URL_HINTS.search(path) or PROFILE_URL_HINTS.search(path)
+                                or (self.cfg.include_offices and OFFICE_URL_HINTS.search(path + " " + text))
+                                or LINK_TEXT_HINTS.search(text) or depth == 0):
+                            self._push(u, depth + 1, page_focus or bool(FOCUS_URL_HINTS.search(text)), "", start)
+            self.progress({"event": "page", "url": page.final_url, "type": pr.page_type, "status": page.status,
+                           "doctors_on_page": len(pr.doctors), "fetched": fetched, "queued": len(self._frontier),
+                           "doctors_total": len(self.merger.records),
+                           "faculty": sum(1 for d in self.merger.records if d.is_relevant),
+                           "offices": len(self.offices),
+                           "error": page.error})
+
+        def worker() -> None:
+            relevance.set_targets(self.cfg.departments)
+            while True:
+                while self.pause_event.is_set() and not self.stop_event.is_set():
+                    time.sleep(0.3)  # paused: keep everything found so far and wait for Resume
+                with lock:
+                    job = take()
+                if job is None:
+                    return
+                if job == "":
+                    time.sleep(0.05)
+                    continue
+                url, depth, from_focus = job
+                try:
+                    page = self.fetcher.get(url)  # network and parsing happen outside the lock
+                    pr = extract_page(page)
+                except Exception as exc:  # one bad page must not stop the site
+                    log.warning("page %s failed: %s", url, exc)
+                    page = Page(url, url, 0, "", error=f"{type(exc).__name__}: {exc}")
+                    pr = PageResult(url, "error", signals={"error": page.error})
+                with lock:
+                    try:
+                        handle(url, depth, from_focus, page, pr)
+                    finally:
+                        state["in_flight"] -= 1
+
+        try:
+            threads = [threading.Thread(target=worker, daemon=True, name=f"crawl-{i}") for i in range(self.cfg.workers)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                while t.is_alive():
+                    t.join(0.2)
         except KeyboardInterrupt:
             self.stop_event.set()
+            for t in threads:
+                t.join(30)
         finally:
             self.fetcher.close()
+        fetched = state["fetched"]
         result.doctors = self.merger.records
         result.offices = self.offices
+        caller_targets = relevance.targets()  # this thread may belong to the caller: put its filter back after
+        relevance.set_targets(self.cfg.departments)
         for d in result.doctors:  # merged records: check the final title and department once more
             clean_fields(d)
             relevance.rescore(d)
+        relevance.set_targets(caller_targets)
         demote_sitewide(result.doctors, self.value_pages)
         demote_shared(result.doctors)
         result.stats = {
@@ -360,6 +410,7 @@ class Crawler:
             "profiles_fetched": sum(1 for d in result.doctors if d.page_type == "profile"),
             "seconds": round(time.time() - t0, 1), "stopped_early": self.stop_event.is_set(),
             "frontier_left": len(self._frontier), "blocked_by_robots": len(self.blocked),
+            "stopped_no_new_people": state["patience_stop"],
         }
         self.progress({"event": "done", **result.stats})
         return result

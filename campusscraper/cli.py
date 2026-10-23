@@ -20,6 +20,7 @@ def _config(a) -> ScrapeConfig:
         max_pages=a.max_pages, max_depth=a.depth, delay_seconds=a.delay, render=a.render,
         relevant_only=not a.all_people, use_sitemaps=not a.no_sitemap, include_subdomains=a.subdomains,
         departments=[d for d in (a.departments or "").split(",") if d.strip()], include_offices=not a.no_offices,
+        workers=a.workers, patience=a.patience,
         save_html_dir=a.save_html, extra_profile_patterns=a.pattern or [],
         **({"user_agent": a.user_agent} if a.user_agent else {}),
         **({"allow_private_hosts": True} if a.allow_local else {}),
@@ -66,6 +67,10 @@ def main(argv=None) -> int:
         sp.add_argument("--departments", help="keep only these departments in the Faculty sheet, e.g. --departments \"CSE,IT,ECE\"")
         sp.add_argument("--all-people", action="store_true", help="CSV/JSON output: everyone found, not only the Faculty sheet")
         sp.add_argument("--no-offices", action="store_true", help="skip placement / higher-studies / student-chapter pages")
+        sp.add_argument("--workers", type=int, default=3,
+                        help="pages fetched at the same time per site (1-8, default 3); the gap between requests stays --delay")
+        sp.add_argument("--patience", type=int, default=80,
+                        help="stop a site after this many pages in a row add nobody new (default 80, 0 = never)")
         sp.add_argument("--no-sitemap", action="store_true", help="do not read sitemap.xml")
         sp.add_argument("--subdomains", action="store_true", help="also crawl other subdomains of the same site")
         sp.add_argument("--save-html", metavar="DIR", help="save every fetched page to DIR (for debugging)")
@@ -85,6 +90,8 @@ def main(argv=None) -> int:
     b.add_argument("--pages-per-site", type=int, default=150, help="page budget for each college (default 150)")
     b.add_argument("--only", help="only colleges whose name contains this text, e.g. --only Vasavi")
     b.add_argument("--no-resume", action="store_true", help="re-crawl colleges that already finished")
+    b.add_argument("--colleges-at-once", type=int, default=3,
+                   help="colleges crawled at the same time (default 3); rows on the same website never run together")
     common(b)
 
     t = sub.add_parser("template", help="write the blank college-list Excel template")
@@ -157,7 +164,8 @@ def main(argv=None) -> int:
                       f"{e['note']}", flush=True)
             elif e["event"] in ("page", "sitemap"):
                 _print_progress(e)
-        path = run_batch(sources, a.out, _config(a), a.pages_per_site, resume=not a.no_resume, progress=show)
+        path = run_batch(sources, a.out, _config(a), a.pages_per_site, resume=not a.no_resume, progress=show,
+                         parallel_sites=max(1, min(a.colleges_at_once, 8)))
         print(f"\nSaved combined file: {path.resolve()}")
         return 0
     if a.cmd == "page":

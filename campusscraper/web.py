@@ -60,6 +60,8 @@ class JobIn(BaseModel):
     include_subdomains: bool = False
     departments: str = Field("", max_length=300)
     include_offices: bool = True
+    workers: int = Field(3, ge=1, le=8)
+    patience: int = Field(80, ge=0, le=5000)
 
 
 class PageIn(BaseModel):
@@ -103,7 +105,7 @@ class Job:
             cfg = ScrapeConfig(max_pages=b.max_pages, max_depth=b.max_depth, delay_seconds=b.delay_seconds,
                                render=b.render, relevant_only=not b.all_people, use_sitemaps=b.use_sitemaps,
                                include_subdomains=b.include_subdomains, departments=_depts(b.departments),
-                               include_offices=b.include_offices)
+                               include_offices=b.include_offices, workers=b.workers, patience=b.patience)
             self.crawler = Crawler(cfg, self.on_event, self.stop, self.pause)
             self.result = self.crawler.run([u.strip() for u in b.urls if u.strip()])
             OUT_DIR.mkdir(exist_ok=True)
@@ -124,6 +126,7 @@ class Job:
         from .profile import clean_fields
         c = self.crawler
         docs = [PersonRecord.from_full_dict(d.to_full_dict()) for d in list(c.merger.records)] if c else []
+        relevance.set_targets(_depts(self.body.departments))
         for d in docs:
             clean_fields(d)
             relevance.rescore(d)
@@ -317,6 +320,9 @@ class BatchIn(UploadIn):
     use_sitemaps: bool = True
     departments: str = Field("", max_length=300)
     include_offices: bool = True
+    workers: int = Field(3, ge=1, le=8)
+    patience: int = Field(80, ge=0, le=5000)
+    colleges_at_once: int = Field(3, ge=1, le=8)
 
 
 def _load_upload(body: UploadIn):
@@ -366,11 +372,15 @@ class BatchJob:
 
     def on_event(self, e: dict) -> None:
         if e["event"] == "site_start":
-            self.current, self.index = e["institution"], e["index"]
+            self.index = max(self.index, e["index"])
+            running = [src.institution for _, src in list((self.live.get("active") or {}).values())]
+            self.current = ", ".join(dict.fromkeys(running + [e["institution"]]))
             self.log.append({"url": f"=== {e['institution']}", "type": "info", "status": "", "doctors": 0})
         elif e["event"] == "site_done":
             site = {k: v for k, v in e.items() if k != "event"}
             self.sites.append(site)
+            running = [src.institution for _, src in list((self.live.get("active") or {}).values())]
+            self.current = ", ".join(running)
             _safe(store().save_site, self.id, site)
             _safe(self._save_college, site["institution"])
         elif e["event"] == "page":
@@ -384,12 +394,13 @@ class BatchJob:
         try:
             base = ScrapeConfig(max_depth=b.max_depth, delay_seconds=b.delay_seconds, render=b.render,
                                 relevant_only=not b.all_people, use_sitemaps=b.use_sitemaps,
-                                departments=_depts(b.departments), include_offices=b.include_offices)
+                                departments=_depts(b.departments), include_offices=b.include_offices,
+                                workers=b.workers, patience=b.patience)
             OUT_DIR.mkdir(exist_ok=True)
             out = OUT_DIR / f"batch-{self.id}.xlsx"  # fixed name: a resumed batch continues in the same files
             self.xlsx = run_batch(self.sources, out, base, b.pages_per_site, resume=self.resume,
                                   progress=self._capture, stop_event=self.stop, live=self.live,
-                                  pause_event=self.pause)
+                                  pause_event=self.pause, parallel_sites=b.colleges_at_once)
             self.state = "stopped" if self.stop.is_set() else "done"
             if self.live.get("merger") is not None:
                 _safe(store().save_people, self.id, list(self.live["merger"].records))
@@ -468,16 +479,15 @@ def batch_doctors(job_id: str):
     job = BATCHES.get(job_id) or _missing("batch")
     live = job.live
     docs = list(live["merger"].records) if live.get("merger") else []
-    crawler, src = live.get("crawler"), live.get("src")
-    if crawler is not None and src is not None:
+    running = list((live.get("active") or {}).values())
+    offices = list(live.get("offices") or [])
+    for crawler, src in running:
         for d in list(crawler.merger.records):
             d.source_institution = d.source_institution or src.institution
             docs.append(d)
+        offices += list(crawler.offices)
     if not job.body.all_people:
         docs = [d for d in docs if d.is_relevant]
-    offices = list(live.get("offices") or [])
-    if crawler is not None and src is not None:
-        offices += list(crawler.offices)
     return {"doctors": _rows(docs), "offices": _office_rows(offices)}
 
 

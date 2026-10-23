@@ -76,6 +76,17 @@ URLs you give (in the start box or the college list) are always fetched first, s
 
 All OncoScraper options also work: `--max-pages`, `--depth`, `--delay`, `--show-browser`, `--save-html`, `--subdomains`, `--pattern`.
 
+## Speed
+
+| Setting | Default | What it does |
+|---|---|---|
+| Colleges at once (`--colleges-at-once`, batch box in the UI) | 3 | Crawls several colleges at the same time. Each college is a different website, so no site gets more requests. Rows on the same website never run together. |
+| `--workers` | 3 | Fetches up to 3 pages of one site at a time. The gap between requests to that site stays `--delay`, so a slow server no longer holds up the crawl. |
+| `--patience` | 80 | Stops a site after 80 pages in a row add nobody new. The Colleges sheet notes when this happened. `0` turns it off. |
+| `--delay` | 1.5 s | Gap between requests to one site. `1` is faster and still polite; a site's robots.txt crawl-delay always wins. |
+
+Measured on three fictional colleges whose server takes 1.2 s per page: a batch went from 82 s to 23 s with the same results.
+
 ## College list (batch)
 
 One row per college. College Name and one URL are required.

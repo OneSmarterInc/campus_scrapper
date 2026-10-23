@@ -6,7 +6,7 @@ function safeUrl(u) { return /^https?:\/\//i.test(u || '') ? u : '#'; }
 function say(el, text, kind = 'info') { el.textContent = text || ''; el.className = 'msg ' + kind; }
 
 const FIELD_NAMES = { urls: 'Start URL', max_pages: 'Max pages', max_depth: 'Max link depth', delay_seconds: 'Delay',
-  pages_per_site: 'Pages per college', departments: 'Departments', render: 'JavaScript option', url: 'URL' };
+  pages_per_site: 'Pages per college', colleges_at_once: 'Colleges at once', departments: 'Departments', render: 'JavaScript option', url: 'URL' };
 
 // Turn any server answer into {ok, data, error} with a readable error.
 async function api(url, opts = {}) {
@@ -233,7 +233,8 @@ $('b-start').onclick = async () => {
   try {
     Object.assign(body, { pages_per_site: num('b-pages', 'Pages per college', 1, 5000), delay_seconds: num('b-delay', 'Delay', 0, 30),
       render: $('b-render').value, all_people: $('b-all').checked, use_sitemaps: $('b-sitemap').checked,
-      departments: $('b-departments').value.trim(), include_offices: $('b-offices').checked });
+      departments: $('b-departments').value.trim(), include_offices: $('b-offices').checked,
+      colleges_at_once: num('b-at-once', 'Colleges at once', 1, 8) });
   } catch (e) { say($('b-msg'), e.message, 'bad'); return; }
   $('b-start').disabled = true;
   const r = await postJSON('/api/batch', body);
