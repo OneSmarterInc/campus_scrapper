@@ -62,6 +62,7 @@ class PersonRecord:
     found_on: list[str] = field(default_factory=list)
     page_type: str = "profile"
     source_institution: str = ""   # set in batch mode: which college list row produced this record
+    section_role: str = ""         # extraction only: 'alumni' when the card sits in an alumni / testimonial section
 
     # -- field helpers -------------------------------------------------
     def get(self, name: str, default: Any = None) -> Any:

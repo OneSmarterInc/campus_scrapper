@@ -14,7 +14,10 @@ from .profile import (
     academic_links, assign_emails, assign_phones, city_from, find_name_in_text, parse_experience, parse_qualifications,
     plain_person_name, qualification_line, split_designation, sub_specialties,
 )
-from .vocab import INSTITUTION_WORDS, NAME_RE, PROFILE_URL_HINTS, label_field
+from .vocab import (
+    ALUMNI_CARD, INSTITUTION_WORDS, NAME_RE, NOT_STAFF_SECTION, PROFILE_URL_HINTS, STAFF_SECTION, TEACHING_WORDS,
+    label_field,
+)
 
 NAME_TAGS = ("a", "h2", "h3", "h4", "h5", "h6", "strong", "b", "p", "span", "div", "td", "li", "figcaption")
 LINK_TEXT_HINT = re.compile(r"view|profile|know more|read more|details|more info|meet|vidwan|irins", re.I)
@@ -109,8 +112,42 @@ def leaf_lines(card: Tag) -> list[str]:
     return out
 
 
+def _attr_words(el: Tag) -> str:
+    cls = el.get("class") or []
+    return " ".join([*(cls if isinstance(cls, list) else [cls]), el.get("id") or "", el.get("aria-label") or ""])
+
+
+def section_role(card: Tag) -> str:
+    """'alumni' when the card sits in an alumni, testimonial, topper or recruiter block of the page.
+
+    Looks at the card's own wrappers (class/id such as 'alumni-slider') first, then the nearest heading above it.
+    """
+    el = card
+    for _ in range(10):
+        if el is None or getattr(el, "name", None) in (None, "body", "html", "[document]"):
+            break
+        words = _attr_words(el)
+        if words.strip():
+            if NOT_STAFF_SECTION.search(words):
+                return "alumni"
+            if STAFF_SECTION.search(words):
+                return ""
+        el = el.parent
+    # The section heading above the card; card titles that are just a person's name are skipped.
+    for heading in card.find_all_previous(["h1", "h2", "h3", "h4", "h5", "h6"], limit=40):
+        text = " ".join(heading.get_text(" ", strip=True).split())[:120]
+        if not text or NAME_RE.search(text) or plain_person_name(text):
+            continue
+        return "alumni" if NOT_STAFF_SECTION.search(text) and not STAFF_SECTION.search(text) else ""
+    return ""
+
+
 def card_record(card: Tag, name: str, base_url: str) -> PersonRecord:
     rec = PersonRecord(source_url=base_url, page_type="listing")
+    rec.section_role = section_role(card)
+    card_text = " ".join(card.get_text(" ", strip=True).split())[:600]
+    if not rec.section_role and ALUMNI_CARD.search(card_text) and not TEACHING_WORDS.search(card_text):
+        rec.section_role = "alumni"  # a graduate's card ('Alumnus', 'Batch 2012', 'Software Engineer at X')
     lines = text_lines(card)
     leaves = leaf_lines(card)
     if len(lines) <= 2 and len(leaves) > len(lines):
@@ -305,6 +342,7 @@ def tables(main: Tag, base_url: str) -> list[PersonRecord]:
             if len(cells) < len(mapping):
                 continue
             rec = PersonRecord(source_url=base_url, page_type="listing")
+            rec.section_role = section_role(table)
             snippet = " | ".join(c.get_text(" ", strip=True) for c in cells)[:500]
             for idx, f in mapping.items():
                 if idx >= len(cells):

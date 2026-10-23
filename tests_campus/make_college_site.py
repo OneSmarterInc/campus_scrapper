@@ -32,7 +32,21 @@ FILES["index.html"] = page("Sunrise Institute of Technology | Autonomous | Hyder
 <section class="hero"><h1>Shaping engineers since 1998</h1><p>NAAC A++ accredited. Affiliated to JNTUH.</p></section>
 <section><h2>Departments</h2><ul><li><a href="/departments/cse">Computer Science and Engineering</a></li>
 <li><a href="/departments/mech">Mechanical Engineering</a></li></ul>
-<a href="/faculty">Our Faculty</a> <a href="/careers/assistant-professor">We are hiring</a></section>""")
+<a href="/faculty">Our Faculty</a> <a href="/careers/assistant-professor">We are hiring</a></section>
+<section class="home-block"><h2>Prestigious Alumni</h2><p>We teach values</p>
+<div class="owl-carousel">
+<div class="item"><img src="/img/a1.jpg" alt="Dr. Sanjay Patil"><h4>Dr. Sanjay Patil</h4><p>Director, Infotech Solutions</p></div>
+<div class="item"><img src="/img/a2.jpg" alt="Mr. Nikhil Deshmukh"><h4>Mr. Nikhil Deshmukh</h4><p>Scientist, ISRO</p></div>
+<div class="item"><img src="/img/a3.jpg" alt="Dr. Meera Joshi"><h4>Dr. Meera Joshi</h4><p>Assistant Professor, IIT Bombay</p></div>
+</div></section>
+<section class="home-block"><h2>Faculty Members</h2>
+<div class="owl-carousel">
+<div class="item"><img src="/img/f1.jpg" alt="Dr. Anitha Rao"><h4><a href="/faculty/dr-anitha-rao">Dr. Anitha Rao</a></h4><p>Professor &amp; Head, CSE</p></div>
+<div class="item"><img src="/img/f2.jpg" alt="Prof. K. Srinivas"><h4><a href="/faculty/prof-k-srinivas">Prof. K. Srinivas</a></h4><p>Associate Professor, CSE</p></div>
+</div></section>
+<div class="testimonial-slider"><div class="t"><h4>Ms. Pooja Kale</h4><p>Software Engineer at Google</p><p>"The faculty here shaped my career."</p></div>
+<div class="t"><h4>Mr. Rohan Mehta</h4><p>B.E. CSE, Batch 2015, Senior Engineer, Amazon</p></div></div>
+<a href="/notable-alumni">Notable Alumni</a>""")
 
 FILES["robots.txt"] = """User-agent: *
 Disallow: /admin/
@@ -180,6 +194,12 @@ FILES["student-chapters/ieee.html"] = page("IEEE Student Branch | Sunrise Instit
 FILES["alumni.html"] = page("Alumni Association | Sunrise", """
 <h1>Alumni Association</h1><p>Stay connected with 18,000 alumni across 30 countries.</p>
 <p>Alumni Relations Officer: Mrs. Geetha Rani - alumni@sunrise-it.ac.in, 040-2345 6900</p>""")
+
+FILES["notable-alumni.html"] = page("Notable Alumni | Sunrise Institute of Technology", """
+<h1>Notable Alumni</h1><div class="list">
+<div class="c"><h4>Dr. Vivek Kulkarni</h4><p>Professor, University of Michigan</p><p>Ph.D, M.Tech</p></div>
+<div class="c"><h4>Dr. Asha Bhide</h4><p>Associate Professor, NIT Nagpur</p><p>Ph.D</p></div>
+<div class="c"><h4>Mr. Tushar Gawande</h4><p>Founder, CloudNest</p></div></div>""")
 
 # Noise and traps
 FILES["news/convocation-2026.html"] = page("Convocation 2026", "<h1>Convocation 2026</h1><p>Dr. Chief Guest addressed graduates.</p>")

@@ -362,6 +362,27 @@ STUDENT_MARKERS = re.compile(
 # Words that make such a line a staff line after all ('Faculty Advisor', 'Professor & Branch Counsellor').
 STAFF_IN_LINE = re.compile(r"\b(?:faculty|professor|prof\b|dr\.|lecturer|hod|dean|officer|staff|counsell?or|"
                            r"advisor|adviser|mentor|in-?charge)\b", re.I)
+# Page sections and pages that list people who are not the college's staff:
+# alumni, toppers and placed students, testimonials, guest speakers, recruiters, governing-body members.
+NOT_STAFF_SECTION = re.compile(
+    r"alumn|old[- _]?students|achiever|success[- _]?stor|hall[- _]?of[- _]?fame|notable|distinguished[- _]?(?:alumni|guests?)|"
+    r"testimonial|what[- _]?(?:our|students|parents|alumni)[- _]?say|student[- _]?(?:speak|voice|corner|achievements?)|"
+    r"placed[- _]?students|placement[- _]?(?:record|highlights?|stories)|our[- _]?stars|toppers?|rank[- _]?holders?|"
+    r"gold[- _]?medal|university[- _]?ranks?|recruiters?|guest[- _]?(?:lectures?|speakers?)|expert[- _]?talks?|"
+    r"chief[- _]?guests?|resource[- _]?persons?|governing[- _]?(?:body|council)|board[- _]?of[- _]?(?:governors|management|trustees)|"
+    r"trustees?|management[- _]?committee|founders?\b|news|events?|blog",
+    re.I)
+# Words on a card that mark a graduate, not a staff member: 'Alumnus', 'Batch 2012', 'Software Engineer at X'.
+# Degree years are not used: faculty cards often show them too ('Ph.D (2012)').
+ALUMNI_CARD = re.compile(
+    r"\balumn(?:us|a|i|ae)\b|\bbatch\b|\bclass of\b|passed out|pass[- ]?out|"
+    r"\b(?:CEO|CTO|COO|CFO|Co-?founder|Founder|Software Engineer|SDE|Engineering Manager|Product Manager|"
+    r"Vice President|VP|Managing Director|Senior Engineer)\b.*\b(?:at|@|,)\s*[A-Z]",
+    re.I)
+# A section heading that lists the college's own teaching staff.
+STAFF_SECTION = re.compile(r"faculty|faculties|teaching staff|our team|professors|people|staff|hod|heads? of",
+                           re.I)
+
 # Published counts of students going for higher studies.
 HIGHER_STUDIES_LINE = re.compile(
     r"(?:higher\s+stud(?:y|ies)|abroad|foreign\s+universit|\bms\s+in\b|\bgre\b|toefl|ielts|admits?|"

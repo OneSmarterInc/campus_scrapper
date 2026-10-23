@@ -13,11 +13,20 @@ from .profile import (
     _assign, find_name_in_text, finalize, labels_and_sections, parse_qualifications, patterns,
     plain_person_name, primary_name, qualification_line,
 )
-from .vocab import ACADEMIC_LINKS, DESIGNATION_RE, ORCID_ID_RE, PROFILE_URL_HINTS
+from .vocab import ACADEMIC_LINKS, DESIGNATION_RE, NOT_STAFF_SECTION, ORCID_ID_RE, PROFILE_URL_HINTS, STAFF_SECTION
 
 
 def _canon_name(raw: str) -> str | None:
     return find_name_in_text(raw) or plain_person_name(raw)
+
+
+def not_staff_page(url: str, h1: str, breadcrumbs: list[str], meta: dict) -> bool:
+    """A page about alumni, testimonials, toppers, recruiters or events lists no staff."""
+    path = urlsplit(url).path.replace("-", " ").replace("_", " ")
+    for text in (path, h1, " ".join(breadcrumbs[-2:]), meta.get("og:title") or ""):
+        if text and NOT_STAFF_SECTION.search(text) and not STAFF_SECTION.search(text):
+            return True
+    return False
 
 
 def is_student_record(rec: PersonRecord) -> bool:
@@ -219,7 +228,11 @@ def extract_page(page: Page) -> PageResult:
             finalize(r, [], r.profile_url or url)
         relevance.score(r, page_context)
         result.doctors.append(r)
-    result.doctors = [d for d in result.doctors if not is_student_record(d)]
+    # Alumni, toppers, testimonials, recruiters and guests are not the college's people: they are left out.
+    if not_staff_page(url, h1_text, breadcrumbs, meta):
+        result.doctors = []
+        result.signals["not_staff_page"] = True
+    result.doctors = [d for d in result.doctors if not is_student_record(d) and d.section_role != "alumni"]
     office = offices.extract_office(soup, main, url, meta, breadcrumbs)
     if office:
         if not office.institution and ld_page.get("institution"):

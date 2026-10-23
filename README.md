@@ -25,7 +25,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest -q tests_campus
 ```
 
-Expect `14 passed`. Then try the fictional demo college. Window 1:
+Expect `15 passed`. Then try the fictional demo college. Window 1:
 
 ```powershell
 .\.venv\Scripts\python.exe tests_campus\demo_site.py
@@ -107,6 +107,8 @@ Faculty and student-office URLs give much better results than the home page alon
 | Evidence | each value, which rule found it, the page text and URL |
 | Pages | every URL visited, status and page type |
 
+**Alumni are left out.** People in alumni, testimonial, topper, recruiter, guest-speaker or governing-body sections are not taken, even when they hold a title like Professor or Director elsewhere. The section is recognised from its heading ("Prestigious Alumni", "What our students say") or its wrapper (`alumni-slider`, `testimonial`), and whole pages such as "Notable Alumni" are skipped. Cards that say "Alumnus", "Batch 2015" or "Software Engineer at X" are skipped too.
+
 **Who counts as faculty.** A teaching title (Professor, Associate/Assistant Professor, Lecturer, HOD, Dean, Principal), or a postgraduate degree on a faculty page. Lab assistants, technicians, clerks and librarians go to All people only. With `--departments`, faculty of other departments also go to All people only.
 
 **Contacts.** Only what the page publishes. Faculty Email/Phone holds the person's own address or mobile. Department / Office Email and Phone hold shared mailboxes (`hodcse@`, `tpo@`, `principal@`) and landlines. A contact that appears for two or more people, or in the site header or footer, is moved to the office columns.
@@ -145,6 +147,6 @@ campusscraper/
   web.py        local web UI and portal (static/)
   fetch.py, render.py, robots.py, dom.py, annotate.py, structured.py, emails.py, phones.py, contacts.py
                 shared crawler code from OncoScraper
-tests_campus/   fictional college site and 14 tests
+tests_campus/   fictional college site and 15 tests
 campus_sources/ india_colleges_seed.xlsx (62 colleges), college_list_template.xlsx
 ```

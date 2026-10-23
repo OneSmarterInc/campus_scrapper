@@ -16,6 +16,8 @@ from campusscraper.sources import read_sources, write_template
 CSE = {"Dr. Anitha Rao", "Prof. K. Srinivas", "Ms. Priya Sharma", "Mr. Rajesh Kumar", "Dr. Farah Siddiqui", "Mrs. Lakshmi Devi"}
 MECH = {"Venkata Ramana Murthy", "Sneha Kulkarni"}
 NON_TEACHING = {"Mr. Ramesh Babu", "Mr. Suresh Naik"}
+ALUMNI = {"Dr. Sanjay Patil", "Mr. Nikhil Deshmukh", "Dr. Meera Joshi", "Ms. Pooja Kale", "Mr. Rohan Mehta",
+          "Dr. Vivek Kulkarni", "Dr. Asha Bhide", "Mr. Tushar Gawande"}
 STUDENT_NAMES = ("Rahul Verma", "Sravani Reddy", "Kiran Teja", "Naveen Kumar", "Divya Menon", "Arjun Patel")
 STUDENT_CONTACTS = ("90000 33333", "90000 44444", "98765 00001", "90000 55555", "divya.m22", "rahul.v21", "sravani.r21",
                     "70000 66666")
@@ -324,3 +326,15 @@ def test_portal_history_directories_dashboard_and_resume(site_url, tmp_path, mon
     assert client.delete(f"/api/runs/{bid}").json()["ok"]
     assert all(x["id"] != bid for x in client.get("/api/runs").json()["runs"])
     web._STORE = None
+
+
+def test_alumni_are_never_people(site_url):
+    """Home page with 'Prestigious Alumni' and 'Faculty Members' carousels side by side, a testimonial slider,
+    and a 'Notable Alumni' page whose alumni are professors elsewhere: only the college's own faculty are kept."""
+    result = Crawler(cfg()).run([site_url])
+    names = {d.get("name") for d in result.doctors}
+    assert not names & ALUMNI, names & ALUMNI
+    assert CSE | MECH <= {d.get("name") for d in result.faculty}
+    home = extract_page(Page(site_url + "/", site_url + "/", 200,
+                             (__import__("pathlib").Path(__file__).parent / "site" / "index.html").read_text()))
+    assert {d.get("name") for d in home.doctors} == {"Dr. Anitha Rao", "Prof. K. Srinivas"}
