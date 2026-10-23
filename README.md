@@ -25,7 +25,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest -q tests_campus
 ```
 
-Expect `13 passed`. Then try the fictional demo college. Window 1:
+Expect `14 passed`. Then try the fictional demo college. Window 1:
 
 ```powershell
 .\.venv\Scripts\python.exe tests_campus\demo_site.py
@@ -48,6 +48,20 @@ Double-click `run_ui.bat`, or:
 ```
 
 Open http://127.0.0.1:8001/. Port 8001 lets it run next to the OncoScraper UI on port 8000. Paste a URL, optionally type departments (`CSE, IT, ECE`), click **Start crawl**, then **Download Excel**. Use **Test one page** first to see what it reads from a single faculty or placement page.
+
+### Portal pages
+
+| Page | What it shows |
+|---|---|
+| Dashboard | Faculty, colleges, departments, contact and Scholar/ORCID coverage, student offices (placement and higher-studies cells) across all runs; a per-college table (click a college to open it in the directory, or its office count to open its offices); recent runs. |
+| New run | Upload a college list (batch) or crawl one website; progress, pause/resume/stop, downloads. |
+| Runs | Every past run with status, faculty and offices saved. Download its Excel, Run again (one website), Resume (a batch cut off when the app closed: finished colleges are not crawled again), Delete. |
+| Faculty directory | Everyone found so far, each person once (newest copy). Search; filter by college, department, city, has own email / phone / any contact, has Scholar/ORCID/Scopus; include non-teaching staff. Export Excel or CSV of the filtered list. |
+| Student offices | Placement, higher-studies, student-chapter, alumni and international offices across all runs. Filter by college, office type, has email / phone, publishes higher-studies figures. Export Excel or CSV. |
+
+History is saved in `results\campusscraper.db` (one SQLite file). Copy that file to back it up; delete it to start fresh.
+
+URLs you give (in the start box or the college list) are always fetched first, so a placement or higher-studies page in your list is read even when the page budget is small.
 
 ## Command line
 
@@ -127,9 +141,10 @@ campusscraper/
   sources.py    college-list template
   batch.py      many colleges, per-site budget, resume
   export.py     Excel / CSV / JSON
-  web.py        local web UI (static/)
+  store.py      run history, faculty and office directories, dashboard (SQLite)
+  web.py        local web UI and portal (static/)
   fetch.py, render.py, robots.py, dom.py, annotate.py, structured.py, emails.py, phones.py, contacts.py
                 shared crawler code from OncoScraper
-tests_campus/   fictional college site and 13 tests
+tests_campus/   fictional college site and 14 tests
 campus_sources/ india_colleges_seed.xlsx (62 colleges), college_list_template.xlsx
 ```

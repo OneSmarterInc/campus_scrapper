@@ -190,6 +190,8 @@ class Crawler:
     def _score(self, url: str, depth: int, from_focus: bool, hint: str = "") -> float | None:
         p = urlsplit(url)
         path = p.path + ("?" + p.query if p.query else "")
+        if hint == "start":
+            return 1000.0  # URLs given by the user are always fetched first, whatever their path
         if SKIP_URL.search(path) or SKIP_URL.search(url):
             return None
         s = 10.0
@@ -280,7 +282,7 @@ class Crawler:
         t0 = time.time()
         for s in starts:
             self._queued.discard(_seen_key(s))
-            self._push(s, 0, hint="pagination")
+            self._push(s, 0, hint="start")
             if self.cfg.use_sitemaps:
                 for u in self._sitemap_urls(s):
                     if same_site(u, s, self.cfg.include_subdomains):

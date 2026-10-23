@@ -247,3 +247,80 @@ def test_table_with_name_and_designation_in_one_column():
     assert rows["Dr. M. Suresh"].get("designation") == "Professor & HOD"
     assert rows["Mrs. S. Rekha"].get("qualifications") == ["ME"]
     assert all(d.get("department") == "Electronics and Communication Engineering" and d.is_relevant for d in pr.doctors)
+
+
+def _wait(client, url, done, tries=200):
+    for _ in range(tries):
+        st = client.get(url).json()
+        if done(st):
+            return st
+        time.sleep(0.1)
+    raise AssertionError(st)
+
+
+def test_portal_history_directories_dashboard_and_resume(site_url, tmp_path, monkeypatch):
+    import base64
+    monkeypatch.setattr(web, "OUT_DIR", tmp_path)
+    monkeypatch.setenv("CAMPUSSCRAPER_ALLOW_PRIVATE", "1")
+    monkeypatch.delenv("CAMPUSSCRAPER_DB", raising=False)
+    web._STORE = None
+    client = TestClient(web.app)
+    path = write_template(tmp_path / "p.xlsx", [
+        {"college_name": "Sunrise CSE", "faculty_page_urls": f"{site_url}/departments/cse/faculty",
+         "student_office_urls": f"{site_url}/training-and-placement"},
+        {"college_name": "Sunrise Mech", "faculty_page_urls": f"{site_url}/departments/mech/faculty",
+         "student_office_urls": f"{site_url}/higher-studies-cell"}])
+    payload = {"filename": "p.xlsx", "content_base64": base64.b64encode(path.read_bytes()).decode(),
+               "pages_per_site": 8, "delay_seconds": 0, "render": "never", "use_sitemaps": False}
+    bid = client.post("/api/batch", json=payload).json()["id"]
+    _wait(client, f"/api/batch/{bid}", lambda s: s["state"] == "done", tries=300)
+    runs = client.get("/api/runs").json()["runs"]
+    assert runs[0]["id"] == bid and runs[0]["state"] == "done"
+    assert runs[0]["faculty_saved"] > 0 and runs[0]["offices_saved"] >= 2
+    assert len(client.get(f"/api/runs/{bid}").json()["sites"]) == 2
+    d = client.get("/api/directory").json()
+    assert d["total"] > 0 and {"Sunrise CSE", "Sunrise Mech"} <= set(d["facets"]["colleges"])
+    assert "Mechanical Engineering" in d["facets"]["departments"]
+    mech = client.get("/api/directory", params={"college": "Sunrise Mech"}).json()
+    assert {x["name"] for x in mech["doctors"]} >= MECH and all(x["source_institution"] == "Sunrise Mech" for x in mech["doctors"])
+    cse = client.get("/api/directory", params={"department": "Computer Science and Engineering"}).json()
+    assert cse["total"] >= 4 and all(x["department"] == "Computer Science and Engineering" for x in cse["doctors"])
+    assert client.get("/api/directory", params={"has_profile": "true"}).json()["total"] >= 1
+    assert client.get("/api/directory", params={"q": "zzzz-nothing"}).json()["total"] == 0
+    staff = client.get("/api/directory", params={"all_people": "true", "college": "Sunrise Mech"}).json()
+    assert NON_TEACHING <= {x["name"] for x in staff["doctors"]}
+    offs = client.get("/api/offices").json()
+    assert {o["office_type"] for o in offs["offices"]} >= {"placement", "higher_studies"}
+    tp = client.get("/api/offices", params={"office_type": "placement"}).json()["offices"]
+    assert tp[0]["emails"] == ["tpo@sunrise-it.ac.in"] and tp[0]["college"] == "Sunrise CSE"
+    assert client.get("/api/offices", params={"has_figures": "true"}).json()["total"] >= 2
+    dash = client.get("/api/dashboard").json()
+    assert dash["totals"]["faculty"] == d["total"] and dash["totals"]["offices"] == offs["total"]
+    assert dash["totals"]["placement_cells"] >= 1 and len(dash["colleges"]) == 2
+    assert client.get("/api/directory/download.xlsx").content[:2] == b"PK"
+    assert "Sunrise" in client.get("/api/directory/download.csv").text
+    assert client.get("/api/offices/download.xlsx").content[:2] == b"PK"
+    assert "tpo@sunrise-it.ac.in" in client.get("/api/offices/download.csv").text
+    assert client.get(f"/api/runs/{bid}/download.xlsx").content[:2] == b"PK"
+    for s in STUDENT_NAMES + STUDENT_CONTACTS:  # the history holds no students either
+        assert s not in json.dumps(offs) + json.dumps(staff)
+    # app restart while a batch was going: it shows as interrupted and can be resumed
+    web.store().update_run(bid, state="running")
+    web.BATCHES.pop(bid)
+    web._STORE = None
+    assert client.get(f"/api/runs/{bid}").json()["state"] == "interrupted"
+    r = client.post(f"/api/runs/{bid}/resume").json()
+    assert r["id"] == bid and r["colleges"] == 2
+    st = _wait(client, f"/api/batch/{bid}", lambda s: s["state"] == "done", tries=300)
+    assert {s["status"] for s in st["sites"]} == {"resumed"}  # finished colleges were not crawled again
+    # single crawl: saved, and can be run again
+    jid = client.post("/api/jobs", json={"urls": [site_url + "/departments/cse/faculty"], "delay_seconds": 0,
+                                         "render": "never", "max_pages": 6, "use_sitemaps": False}).json()["id"]
+    _wait(client, f"/api/jobs/{jid}", lambda s: s["state"] == "done")
+    again = client.post(f"/api/runs/{jid}/rerun").json()["id"]
+    assert again != jid
+    _wait(client, f"/api/jobs/{again}", lambda s: s["state"] == "done")
+    # delete
+    assert client.delete(f"/api/runs/{bid}").json()["ok"]
+    assert all(x["id"] != bid for x in client.get("/api/runs").json()["runs"])
+    web._STORE = None

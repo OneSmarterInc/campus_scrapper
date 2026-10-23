@@ -1,11 +1,13 @@
 """Local web UI: paste a college URL or upload a college list, watch the crawl, download the Excel file."""
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -16,10 +18,35 @@ from .crawl import Crawler, CrawlResult
 from .export import to_csv, to_json, to_xlsx
 from .extract import extract_page
 from .fetch import Fetcher
+from .models import OfficeRecord, PersonRecord
 
 STATIC = Path(__file__).parent / "static"
 OUT_DIR = Path.cwd() / "results"
 app = FastAPI(title="CampusScraper", docs_url=None, redoc_url=None)
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_STORE = None
+
+
+def store():
+    """The local database (results/campusscraper.db next to the Excel files)."""
+    global _STORE
+    from .store import Store
+    path = Path(os.environ.get("CAMPUSSCRAPER_DB") or OUT_DIR / "campusscraper.db")
+    if _STORE is None or _STORE.path != path:
+        _STORE = Store(path)
+    return _STORE
+
+
+def _safe(fn, *a, **k):
+    """Saving history must never break a crawl."""
+    try:
+        return fn(*a, **k)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[history] could not save: {exc}")
+
+
+def _host(u: str) -> str:
+    return (urlsplit(u if "://" in u else "https://" + u).hostname or u).removeprefix("www.")
 
 
 class JobIn(BaseModel):
@@ -54,10 +81,17 @@ class Job:
         self.pause = threading.Event()
         self.crawler: Crawler | None = None
         self.xlsx: Path | None = None
+        self.site_name = _host(body.urls[0]) if body.urls else ""
+
+    def save_history(self, res: CrawlResult) -> None:
+        store().save_people(self.id, res.doctors, self.site_name)
+        store().save_offices(self.id, res.offices, self.site_name)
 
     def on_event(self, e: dict) -> None:
         if e["event"] == "page":
             self.progress = {k: e.get(k, 0) for k in ("fetched", "doctors_total", "faculty", "offices", "queued")}
+            if e["fetched"] % 25 == 0 and self.crawler:  # keep the history up to date during long crawls
+                _safe(lambda: self.save_history(self.snapshot()))
             self.log.append({"url": e["url"], "type": e["type"], "status": e["status"],
                              "doctors": e["doctors_on_page"], "error": e.get("error")})
         elif e["event"] == "sitemap":
@@ -75,9 +109,12 @@ class Job:
             OUT_DIR.mkdir(exist_ok=True)
             self.xlsx = to_xlsx(self.result, OUT_DIR / f"faculty-{time.strftime('%Y%m%d-%H%M%S')}-{self.id}.xlsx")
             self.state = "stopped" if self.stop.is_set() else "done"
+            _safe(self.save_history, self.result)
         except Exception as exc:  # surface any crash to the UI
             self.error = f"{type(exc).__name__}: {exc}"
             self.state = "failed"
+        _safe(store().update_run, self.id, state=self.state, finished=time.time(), error=self.error,
+              stats=(self.result.stats if self.result else {}), xlsx=str(self.xlsx) if self.xlsx else None)
 
     def snapshot(self) -> CrawlResult:
         """What has been found so far, while the crawl is still running (copies; the crawl is not touched)."""
@@ -152,12 +189,15 @@ def _pause(job, paused: bool) -> dict:
     if job.state != "running":
         raise HTTPException(409, f"cannot pause or resume: the run is {job.state}")
     (job.pause.set if paused else job.pause.clear)()
+    _safe(store().update_run, job.id, state=_state(job))
     return {"ok": True, "state": _state(job)}
 
 
-@app.get("/static/app.js")
-def app_js():
-    return Response((STATIC / "app.js").read_text(encoding="utf-8"), media_type="application/javascript",
+@app.get("/static/{name}.js")
+def static_js(name: str):
+    if name not in ("app", "portal"):
+        raise HTTPException(404, "not found")
+    return Response((STATIC / f"{name}.js").read_text(encoding="utf-8"), media_type="application/javascript",
                     headers={"Cache-Control": "no-cache"})
 
 
@@ -172,6 +212,7 @@ def start(body: JobIn):
         raise HTTPException(400, "render must be never, auto or always")
     job = Job(body)
     JOBS[job.id] = job
+    _safe(store().create_run, job.id, "crawl", ", ".join(_host(u) for u in body.urls[:3]), body.model_dump())
     threading.Thread(target=job.run, daemon=True).start()
     return {"id": job.id}
 
@@ -304,8 +345,9 @@ def _load_upload(body: UploadIn):
 
 
 class BatchJob:
-    def __init__(self, body: BatchIn, sources):
-        self.id = uuid.uuid4().hex[:10]
+    def __init__(self, body: BatchIn, sources, run_id: str | None = None, resume: bool = False):
+        self.id = run_id or uuid.uuid4().hex[:10]
+        self.resume = resume
         self.body = body
         self.sources = sources
         self.state = "running"
@@ -327,7 +369,10 @@ class BatchJob:
             self.current, self.index = e["institution"], e["index"]
             self.log.append({"url": f"=== {e['institution']}", "type": "info", "status": "", "doctors": 0})
         elif e["event"] == "site_done":
-            self.sites.append({k: v for k, v in e.items() if k != "event"})
+            site = {k: v for k, v in e.items() if k != "event"}
+            self.sites.append(site)
+            _safe(store().save_site, self.id, site)
+            _safe(self._save_college, site["institution"])
         elif e["event"] == "page":
             self.progress = {k: e.get(k, 0) for k in ("fetched", "doctors_total", "faculty", "offices", "queued")}
             self.log.append({"url": e["url"], "type": e["type"], "status": e["status"],
@@ -341,14 +386,26 @@ class BatchJob:
                                 relevant_only=not b.all_people, use_sitemaps=b.use_sitemaps,
                                 departments=_depts(b.departments), include_offices=b.include_offices)
             OUT_DIR.mkdir(exist_ok=True)
-            out = OUT_DIR / f"batch-{time.strftime('%Y%m%d-%H%M%S')}-{self.id}.xlsx"
-            self.xlsx = run_batch(self.sources, out, base, b.pages_per_site, resume=False,
+            out = OUT_DIR / f"batch-{self.id}.xlsx"  # fixed name: a resumed batch continues in the same files
+            self.xlsx = run_batch(self.sources, out, base, b.pages_per_site, resume=self.resume,
                                   progress=self._capture, stop_event=self.stop, live=self.live,
                                   pause_event=self.pause)
             self.state = "stopped" if self.stop.is_set() else "done"
+            if self.live.get("merger") is not None:
+                _safe(store().save_people, self.id, list(self.live["merger"].records))
+                _safe(store().save_offices, self.id, list(self.live.get("offices") or []))
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
             self.state = "failed"
+        _safe(store().update_run, self.id, state=self.state, finished=time.time(), error=self.error,
+              stats=self.stats or {}, xlsx=str(self.xlsx) if self.xlsx else None)
+
+    def _save_college(self, college: str) -> None:
+        """This college's people and offices go into the history as soon as it finishes."""
+        merger = self.live.get("merger")
+        if merger is not None:
+            store().save_people(self.id, [d for d in list(merger.records) if d.source_institution == college])
+        store().save_offices(self.id, [o for o in list(self.live.get("offices") or []) if o.source_institution == college])
 
     def _capture(self, e: dict) -> None:
         if e["event"] == "batch_done":
@@ -387,6 +444,9 @@ def batch_start(body: BatchIn):
         raise HTTPException(400, "No usable colleges in the file: " + "; ".join(p.problem for p in problems[:5]))
     job = BatchJob(body, sources)
     BATCHES[job.id] = job
+    import base64
+    _safe(store().create_run, job.id, "batch", f"{body.filename} ({len(sources)} colleges)",
+          body.model_dump(exclude={"content_base64"}), body.filename, base64.b64decode(body.content_base64))
     threading.Thread(target=job.run, daemon=True).start()
     return {"id": job.id, "colleges": len(sources), "problems": [p.__dict__ for p in problems]}
 
@@ -471,3 +531,169 @@ def batch_download(job_id: str):
                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     return FileResponse(job.xlsx, filename=job.xlsx.name,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ---------------------------------------------------------------------------
+# Portal: run history, faculty directory, student-office directory, dashboard (all from the local database)
+def _live_state(run_id: str) -> str | None:
+    job = JOBS.get(run_id) or BATCHES.get(run_id)
+    return _state(job) if job else None
+
+
+@app.get("/api/runs")
+def runs_list():
+    runs = store().list_runs()
+    for r in runs:
+        r["state"] = _live_state(r["id"]) or r["state"]
+        r["live"] = r["id"] in JOBS or r["id"] in BATCHES
+    return {"runs": runs}
+
+
+@app.get("/api/runs/{run_id}")
+def run_detail(run_id: str):
+    r = store().get_run(run_id) or _missing("run")
+    r["state"] = _live_state(run_id) or r["state"]
+    r["sites"] = store().sites(run_id)
+    return r
+
+
+@app.delete("/api/runs/{run_id}")
+def run_delete(run_id: str):
+    if _live_state(run_id) in ("running", "paused"):
+        raise HTTPException(409, "Stop the run before deleting it")
+    store().delete_run(run_id)
+    return {"ok": True}
+
+
+@app.get("/api/runs/{run_id}/download.{fmt}")
+def run_download(run_id: str, fmt: str):
+    if run_id in JOBS:
+        return download(run_id, fmt)
+    if run_id in BATCHES and fmt == "xlsx":
+        return batch_download(run_id)
+    r = store().get_run(run_id) or _missing("run")
+    if fmt == "xlsx" and r.get("xlsx") and Path(r["xlsx"]).is_file():
+        p = Path(r["xlsx"])
+        return FileResponse(p, filename=p.name, media_type=XLSX)
+    docs, offices = store().run_people(run_id), store().run_offices(run_id)
+    if not docs and not offices:
+        raise HTTPException(404, "nothing saved for this run")
+    return _export(docs, offices, fmt, f"run-{run_id}", sites=store().sites(run_id) or None)
+
+
+def _export(docs: list[PersonRecord], offices: list[OfficeRecord], fmt: str, name: str, sites=None,
+            only_fac: bool = True):
+    if fmt == "csv":
+        return Response(to_csv([d for d in docs if d.is_relevant or not only_fac]).encode("utf-8-sig"),
+                        media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
+    res = CrawlResult([], docs, [], offices=offices)
+    fac = res.faculty
+    res.stats = {"people_found": len(docs), "faculty": len(fac), "student_offices": len(offices),
+                 "faculty_with_own_email": sum(1 for d in fac if d.get("email")),
+                 "faculty_with_own_phone": sum(1 for d in fac if d.get("phone"))}
+    if fmt == "json":
+        return Response(to_json(res, only_fac), media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.json"'})
+    if fmt != "xlsx":
+        raise HTTPException(400, "format must be xlsx, csv or json")
+    OUT_DIR.mkdir(exist_ok=True)
+    path = to_xlsx(res, OUT_DIR / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}.xlsx", sites=sites)
+    return FileResponse(path, filename=path.name, media_type=XLSX)
+
+
+@app.post("/api/runs/{run_id}/resume")
+def run_resume(run_id: str):
+    """Carry on a batch that was cut off when the app closed: finished colleges are not crawled again."""
+    import base64
+    if _live_state(run_id) in ("running", "paused"):
+        raise HTTPException(409, "This run is still going")
+    r = store().get_run(run_id) or _missing("run")
+    if r["kind"] != "batch":
+        raise HTTPException(400, "Only college-list batches can be resumed; use Run again for a single website")
+    name, data = store().upload_of(run_id)
+    if not data:
+        raise HTTPException(400, "The college list of this run was not saved; start a new batch")
+    settings = {k: v for k, v in r["settings"].items() if k not in ("filename", "content_base64")}
+    body = BatchIn(filename=name or "list.xlsx", content_base64=base64.b64encode(data).decode(), **settings)
+    sources, _ = _load_upload(body)
+    job = BatchJob(body, sources, run_id=run_id, resume=True)
+    BATCHES[run_id] = job
+    store().update_run(run_id, state="running", finished=None, error=None)
+    threading.Thread(target=job.run, daemon=True).start()
+    return {"id": run_id, "colleges": len(sources)}
+
+
+@app.post("/api/runs/{run_id}/rerun")
+def run_again(run_id: str):
+    r = store().get_run(run_id) or _missing("run")
+    if r["kind"] != "crawl":
+        raise HTTPException(400, "Use Resume for a batch")
+    return start(JobIn(**r["settings"]))
+
+
+def _dir_filters(q: str = "", city: str = "", college: str = "", department: str = "", has_email: bool = False,
+                 has_phone: bool = False, has_contact: bool = False, has_profile: bool = False,
+                 all_people: bool = False) -> dict:
+    return dict(q=q.strip(), city=city, college=college, department=department, has_email=has_email,
+                has_phone=has_phone, has_contact=has_contact, has_profile=has_profile, faculty_only=not all_people)
+
+
+@app.get("/api/directory")
+def directory(q: str = "", city: str = "", college: str = "", department: str = "", has_email: bool = False,
+              has_phone: bool = False, has_contact: bool = False, has_profile: bool = False,
+              all_people: bool = False, page: int = 1):
+    page = max(1, page)
+    f = _dir_filters(q, city, college, department, has_email, has_phone, has_contact, has_profile, all_people)
+    total, rows = store().directory(**f, limit=100, offset=(page - 1) * 100)
+    docs = [PersonRecord.from_full_dict(r) for r in rows]
+    return {"total": total, "page": page, "pages": max(1, -(-total // 100)), "doctors": _rows(docs, 100),
+            "facets": store().facets()}
+
+
+@app.get("/api/directory/download.{fmt}")
+def directory_download(fmt: str, q: str = "", city: str = "", college: str = "", department: str = "",
+                       has_email: bool = False, has_phone: bool = False, has_contact: bool = False,
+                       has_profile: bool = False, all_people: bool = False):
+    f = _dir_filters(q, city, college, department, has_email, has_phone, has_contact, has_profile, all_people)
+    docs = store().directory_records(**f)
+    if not docs:
+        raise HTTPException(404, "No faculty match these filters")
+    return _export(docs, [], fmt, "faculty-directory", only_fac=not all_people)
+
+
+def _office_filters(q: str = "", college: str = "", office_type: str = "", has_email: bool = False,
+                    has_phone: bool = False, has_figures: bool = False) -> dict:
+    return dict(q=q.strip(), college=college, office_type=office_type, has_email=has_email, has_phone=has_phone,
+                has_figures=has_figures)
+
+
+@app.get("/api/offices")
+def office_directory(q: str = "", college: str = "", office_type: str = "", has_email: bool = False,
+                     has_phone: bool = False, has_figures: bool = False):
+    rows = store().office_directory(**_office_filters(q, college, office_type, has_email, has_phone, has_figures))
+    return {"total": len(rows), "offices": rows[:1000], "facets": store().facets()}
+
+
+@app.get("/api/offices/download.{fmt}")
+def office_download(fmt: str, q: str = "", college: str = "", office_type: str = "", has_email: bool = False,
+                    has_phone: bool = False, has_figures: bool = False):
+    offices = store().office_records(**_office_filters(q, college, office_type, has_email, has_phone, has_figures))
+    if not offices:
+        raise HTTPException(404, "No student offices match these filters")
+    if fmt == "csv":
+        import csv
+        import io
+        from .export import OFFICE_COLUMNS, OFFICE_HEADERS, _csv_safe, office_row
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow([OFFICE_HEADERS.get(c) or c for c in OFFICE_COLUMNS])
+        for o in offices:
+            w.writerow([_csv_safe(v) for v in office_row(o)])
+        return Response(buf.getvalue().encode("utf-8-sig"), media_type="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="student-offices.csv"'})
+    return _export([], offices, fmt, "student-offices")
+
+
+@app.get("/api/dashboard")
+def dashboard():
+    return store().dashboard()
