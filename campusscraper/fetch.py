@@ -60,6 +60,12 @@ def normalize_url(url: str) -> str:
     return urlunsplit((scheme, host + port, path, query, ""))
 
 
+def _is_dns_failure(text: str) -> bool:
+    """The hostname does not exist: no client, browsers included, can reach it."""
+    return bool(re.search(r"getaddrinfo|name or service not known|err_name_not_resolved|errno 11001|"
+                          r"nodename nor servname|no address associated", text or "", re.I))
+
+
 def _is_ssl_or_proxy(exc: Exception) -> bool:
     text = f"{type(exc).__name__} {exc}".lower()
     return any(k in text for k in ("certificate", "ssl", "proxy", "tls", "handshake"))
@@ -112,6 +118,7 @@ class Fetcher:
         self._browser_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="browser")
         self._robots_lock = threading.RLock()  # one robots.txt fetch per site, even with parallel workers
         self.browser_hosts: set[str] = set()   # sites that only answer real browsers
+        self._dead_hosts: set[str] = set()     # hostnames DNS cannot resolve; each fails once, then instantly
         self.requests_made = 0
 
     def close(self) -> None:
@@ -168,7 +175,10 @@ class Fetcher:
         except httpx.HTTPError as exc:
             log.warning("robots.txt unavailable to plain HTTP for %s: %s", origin, exc)
             self.robots_status[origin] = f"unreachable to plain HTTP ({type(exc).__name__}), no rules"
-            if self._browser_ok():
+            if _is_dns_failure(str(exc)):
+                self._dead_hosts.add(urlsplit(origin).netloc)
+                self.robots_status[origin] = "hostname does not exist (DNS lookup failed)"
+            elif self._browser_ok():
                 # Plain HTTP cannot connect (certificate, proxy or firewall); read it the way Chrome does.
                 b = self._browser_get(origin + "/robots.txt", expand=False)
                 if b is not None:
@@ -230,7 +240,10 @@ class Fetcher:
             self.check_allowed(url)
         except FetchBlocked as exc:
             return Page(url, url, 0, "", error=str(exc))
-        if urlsplit(url).netloc in self.browser_hosts:
+        host = urlsplit(url).netloc
+        if host in self._dead_hosts:
+            return Page(url, url, 0, "", error="hostname does not exist (DNS lookup failed before)")
+        if host in self.browser_hosts:
             return self._via_browser(url, url, 0, "")
         last_error = None
         for attempt in range(self.cfg.retries + 1):
@@ -240,6 +253,9 @@ class Fetcher:
                 resp = self._raw_get(url)
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+                if _is_dns_failure(last_error):
+                    self._dead_hosts.add(host)
+                    return Page(url, url, 0, "", error="hostname does not exist (DNS lookup failed)")
                 if _is_ssl_or_proxy(exc) or self.stop_event.is_set():
                     break  # retrying the same client will not help
                 self._sleep(min(10, 2 ** attempt))
