@@ -33,7 +33,7 @@ table { width:100%; border-collapse:collapse; font-size:13px; }
 th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
 th { background:var(--bg); position:sticky; top:0; }
 .tablewrap { max-height:560px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
-.tablewrap.sites { max-height:340px; overflow-y:scroll; }
+.tablewrap.sites { max-height:620px; overflow-y:scroll; }
 th { z-index:1; }
 td.contact { white-space:nowrap; font-weight:600; } td.muted { color:var(--muted); font-size:12px; }
 .ok { color:var(--ok); } .warn { color:#9a6700; } .bad { color:var(--bad); }
@@ -177,14 +177,17 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
   <div id="b-progress" hidden>
     <div class="bar"><i id="b-bar"></i></div>
     <div class="stats">
-      <div class="stat"><span>College</span><b id="b-idx">0/0</b></div>
-      <div class="stat"><span>Pages (this college)</span><b id="b-pagesnow">0</b></div>
-      <div class="stat"><span>Faculty (this college)</span><b id="b-onconow">0</b></div>
+      <div class="stat"><span>Colleges finished</span><b id="b-idx">0/0</b></div>
+      <div class="stat"><span>Pages · all colleges</span><b id="b-pagesnow">0</b></div>
+      <div class="stat"><span>Faculty · all colleges</span><b id="b-onconow">0</b></div>
       <div class="stat"><span>Elapsed</span><b id="b-time">0s</b></div>
     </div>
-    <p class="hint" id="b-current"></p>
+    <p id="b-current" role="status" aria-live="polite"></p>
+    <p class="hint" id="b-remaining"></p>
+    <p class="hint">Colleges stay in upload order. Hover over the number to see the spreadsheet row.
+    Finished means the configured crawl ended; it does not guarantee every faculty member was found.</p>
     <div class="tablewrap sites" id="b-wrap" style="margin-top:10px"><table>
-      <thead><tr><th>Row</th><th>College</th><th>Status</th><th>Pages</th><th>Faculty</th><th>Student offices</th><th>With own phone</th><th>With own email</th><th>With any contact</th><th>Note</th></tr></thead>
+      <thead><tr><th>#</th><th>College</th><th>Status</th><th>Pages</th><th>Faculty</th><th>Student offices</th><th>With own phone</th><th>With own email</th><th>With any contact</th><th>Note</th></tr></thead>
       <tbody id="b-sites"></tbody></table></div>
     <div class="row" id="b-dl" hidden><button type="button" id="b-dl-btn">Download combined Excel</button>
       <button type="button" class="secondary" id="b-show">Show results below</button><span class="hint" id="b-totals"></span></div>

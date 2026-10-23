@@ -351,3 +351,44 @@ def test_page_headings_are_not_people():
             "<div class='c'><h4>Smt. M. V. Patil</h4><p>Principal</p></div></div></body></html>")
     pr = extract_page(Page("https://c.example/administration", "https://c.example/administration", 200, html))
     assert {d.get("name") for d in pr.doctors} == {"Smt. M. V. Patil"}
+
+
+def test_batch_progress_tracks_every_college_in_upload_order(monkeypatch):
+    from campusscraper import web
+    from campusscraper.sources import Source
+
+    monkeypatch.setattr(web, "_safe", lambda *args, **kwargs: None)
+    sources = [Source(row=2, institution="First", urls=["https://first.example"]),
+               Source(row=5, institution="Second", urls=["https://second.example"]),
+               Source(row=9, institution="Third", urls=["https://third.example"])]
+    job = web.BatchJob(web.BatchIn(filename="test.csv", content_base64=""), sources)
+    monkeypatch.setitem(web.BATCHES, job.id, job)
+    status = web.batch_status(job.id)
+    assert [r["sequence"] for r in status["rows"]] == [1, 2, 3]
+    assert [r["row"] for r in status["rows"]] == [2, 5, 9]
+    assert status["queued"] == 3 and status["completed"] == 0
+    for i, src in enumerate(sources[:2], 1):
+        job.on_event({"event": "site_start", "row": src.row, "index": i,
+                      "institution": src.institution})
+        job.on_event({"event": "page", "row": src.row, "fetched": i * 10,
+                      "faculty": i * 2, "queued": 5, "url": src.urls[0],
+                      "type": "faculty", "status": 200, "doctors_on_page": 2})
+    status = web.batch_status(job.id)
+    assert status["progress"] == {"fetched": 30, "faculty": 6}
+    assert status["active"] == 2 and status["completed"] == 0
+    assert status["current"] == "First, Second"
+    # The second college finishes first; neither ordering nor the first's counters change.
+    job.on_event({"event": "site_done", "row": 5, "institution": "Second",
+                  "status": "done", "pages": 20, "faculty": 4, "offices": 0})
+    status = web.batch_status(job.id)
+    assert [r["institution"] for r in status["rows"]] == ["First", "Second", "Third"]
+    assert status["completed"] == 1 and status["active"] == 1 and status["queued"] == 1
+    assert status["rows"][0]["pages"] == 10 and status["current"] == "First"
+    job._capture({"event": "batch_done", "faculty": 6})
+    assert web.batch_status(job.id)["phase"] == "finalizing"
+    assert web.batch_status(job.id)["state"] == "running"
+    job.state = "stopped"
+    job.finished = job.started + 125
+    status = web.batch_status(job.id)
+    assert status["elapsed"] == 125
+    assert [r["status"] for r in status["rows"]] == ["interrupted", "done", "not started"]

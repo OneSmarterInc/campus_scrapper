@@ -155,7 +155,7 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
     def crawl_one(i: int, src: Source) -> None:
         slug = f"{_slug(src.institution)}-r{src.row}"
         jpath = site_dir / f"{slug}.json"
-        progress({"event": "site_start", "index": i, "total": len(sources), "institution": src.institution, "urls": src.urls})
+        progress({"event": "site_start", "row": src.row, "index": i, "total": len(sources), "institution": src.institution, "urls": src.urls})
         if resume and jpath.is_file():
             data = json.loads(jpath.read_text(encoding="utf-8"))
             status = "resumed"
@@ -169,7 +169,7 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
                 "departments": list(src.departments or base.departments),
             })
             try:
-                crawler = Crawler(cfg, progress, stop_event, pause_event)
+                crawler = Crawler(cfg, lambda e: progress({**e, "row": src.row, "institution": src.institution}), stop_event, pause_event)
                 with lock:
                     active[src.row] = (crawler, src)
                     if live is not None:

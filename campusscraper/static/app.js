@@ -230,7 +230,7 @@ function attachBatch(id) {
   batchId = id; batchPolls = 0;
   $('b-progress').hidden = false; $('b-dl').hidden = false;
   $('b-dl-btn').textContent = 'Download results so far';
-  $('b-totals').textContent = 'Partial file: finished colleges plus the one being crawled now.';
+  $('b-totals').textContent = 'Partial file: results from all finished and currently crawling colleges.';
   setBatchButtons(true);
   clearInterval(batchTimer); batchTimer = setInterval(pollBatch, 2000); pollBatch();
 }
@@ -252,7 +252,7 @@ $('b-start').onclick = async () => {
 $('b-stop').onclick = async () => {
   if (batchId) await postJSON(`/api/batch/${batchId}/stop`);
   $('b-stop').disabled = true; $('b-pause').disabled = true;
-  $('b-start').disabled = false;
+  $('b-start').disabled = true;
   say($('b-msg'), 'Stopping: colleges being crawled finish their current pages, everything found is kept.', 'info');
 };
 $('b-pause').onclick = () => batchId && togglePause($('b-pause'), `/api/batch/${batchId}`, $('b-msg'));
@@ -262,21 +262,49 @@ async function loadBatchDoctors() {
   const r = await api(`/api/batch/${batchId}/doctors`);
   if (r.ok) showRows(r.data.doctors, 'the college list batch', r.data.offices);
 }
+function batchDuration(seconds) {
+  seconds = Math.max(0, Math.round(seconds));
+  return seconds < 60 ? seconds + 's' : seconds < 3600
+    ? Math.floor(seconds / 60) + 'm ' + seconds % 60 + 's'
+    : Math.floor(seconds / 3600) + 'h ' + Math.floor(seconds % 3600 / 60) + 'm';
+}
 async function pollBatch() {
   const r = await api(`/api/batch/${batchId}`);
   if (!r.ok) { say($('b-msg'), r.error, 'bad'); return; }
   const j = r.data;
-  $('b-idx').textContent = `${j.index}/${j.total}`; $('b-time').textContent = j.elapsed + 's';
-  $('b-pagesnow').textContent = j.progress.fetched || 0; $('b-onconow').textContent = j.progress.faculty || 0;
-  $('b-bar').style.width = (100 * j.sites.length / Math.max(1, j.total)) + '%';
-  $('b-current').textContent = j.state === 'running' ? `Now crawling: ${j.current}`
-    : j.state === 'paused' ? `Paused at: ${j.current} (press Resume to carry on)` : `Batch ${j.state}.`;
+  const terminal = ['done', 'stopped', 'failed'].includes(j.state);
+  const finalizing = !terminal && j.phase === 'finalizing';
+  $('b-idx').textContent = `${j.completed}/${j.total}`;
+  $('b-time').textContent = batchDuration(j.elapsed);
+  $('b-pagesnow').textContent = j.progress.fetched || 0;
+  $('b-onconow').textContent = j.progress.faculty || 0;
+  $('b-bar').style.width = (100 * j.completed / Math.max(1, j.total)) + '%';
+  $('b-current').textContent = terminal
+    ? (j.state === 'done' ? `Batch complete — Excel ready.${j.failed ? ' ' + j.failed + ' colleges failed; review their notes.' : ''}` : `Batch ${j.state} — results may be incomplete.`)
+    : finalizing ? 'Crawling finished — preparing the combined Excel file…'
+    : j.state === 'paused' ? `Paused — ${j.current || 'waiting to start'}. Press Resume to continue.`
+    : j.state === 'stopping' ? 'Stopping — finishing requests already in progress and saving partial results…'
+    : `Crawling now: ${j.current || 'starting workers…'}`;
+  $('b-remaining').textContent = `${j.completed} finished · ${j.active} crawling · ${j.queued} queued · ${j.failed} failed`
+    + (terminal ? ` · ${j.total - j.completed} unfinished`
+       : finalizing ? ' · Download will be ready after export.'
+       : ' · Time remaining: unknown. Websites reveal new pages during crawling; page limits are ceilings, not completion targets.');
   $('b-pause').textContent = j.state === 'paused' ? 'Resume' : 'Pause';
-  if (j.state === 'stopping') { $('b-start').disabled = false; $('b-stop').disabled = true; $('b-pause').disabled = true; }
-  const wrap = $('b-wrap'), keep = wrap.scrollTop;  // keep the user's scroll position on refresh
-  $('b-sites').innerHTML = j.sites.length ? j.sites.map(s => `<tr><td>${s.row}</td><td>${esc(s.institution)}</td><td class="${(s.status === 'error' || s.status === 'failed') ? 'bad' : 'ok'}">${esc(s.status)}</td>
-    <td>${s.pages}</td><td>${s.faculty}</td><td>${s.offices}</td><td>${s.with_phone}</td><td>${s.with_email}</td><td>${s.with_any_contact}</td><td class="muted">${esc(s.note)}</td></tr>`).join('')
-    : `<tr><td colspan="10" class="empty">First college in progress…</td></tr>`;
+  $('b-start').disabled = !terminal;
+  $('b-stop').disabled = terminal || finalizing || j.state === 'stopping';
+  $('b-pause').disabled = terminal || finalizing || j.state === 'stopping';
+  const wrap = $('b-wrap'), keep = wrap.scrollTop;
+  const labels = {done: 'Finished', resumed: 'Finished (saved)', crawling: j.state === 'paused' ? 'Paused' : 'Crawling',
+    queued: 'Queued', stopped: 'Stopped', failed: 'Failed', error: 'Error', interrupted: 'Interrupted', 'not started': 'Not started'};
+  $('b-sites').innerHTML = j.rows.map(s => {
+    const active = s.status === 'crawling';
+    const status = s.status === 'done' && s.note ? 'Finished — see note' : labels[s.status] || s.status;
+    return `<tr${active ? ' style="background:var(--bg);font-weight:600"' : ''}><td title="Spreadsheet row ${s.row}">${s.sequence}</td>
+      <td>${esc(s.institution)}</td><td class="${['error', 'failed', 'interrupted'].includes(s.status) ? 'bad' : ['done', 'resumed'].includes(s.status) ? 'ok' : 'muted'}">${esc(status)}</td>
+      <td>${s.pages}${active ? ' / ' + s.page_limit + ' max' : ''}</td><td>${s.faculty}</td><td>${s.offices}</td>
+      <td>${s.with_phone ?? '—'}</td><td>${s.with_email ?? '—'}</td><td>${s.with_any_contact ?? '—'}</td>
+      <td class="muted">${esc(active ? s.queued + ' discovered pages waiting; more may be found.' : s.note)}</td></tr>`;
+  }).join('');
   wrap.scrollTop = keep;
   if (resultsFrom === 'the college list batch' && (++batchPolls % 3 === 0)) loadBatchDoctors();  // refresh shown doctors
   if (j.state !== 'running' && j.state !== 'paused' && j.state !== 'stopping') {

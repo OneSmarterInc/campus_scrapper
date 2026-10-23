@@ -362,6 +362,13 @@ class BatchJob:
         self.current = ""
         self.index = 0
         self.sites: list[dict] = []
+        self.progress_lock = threading.RLock()
+        self.rows = {src.row: {"row": src.row, "sequence": i, "institution": src.institution,
+                              "status": "queued", "pages": 0, "faculty": 0, "offices": 0,
+                              "queued": 0, "note": "", "page_limit": src.max_pages or body.pages_per_site}
+                     for i, src in enumerate(sources, 1)}
+        self.finished: float | None = None
+        self.phase = "crawling"
         self.log: deque[dict] = deque(maxlen=300)
         self.progress: dict = {}
         self.stats: dict | None = None
@@ -373,6 +380,20 @@ class BatchJob:
         self.live: dict = {}
 
     def on_event(self, e: dict) -> None:
+        with self.progress_lock:
+            self._on_event(e)
+
+    def _on_event(self, e: dict) -> None:
+        row = self.rows.get(e.get("row"))
+        if row is not None:
+            if e["event"] == "site_start":
+                row.update(status="crawling")
+            elif e["event"] == "page":
+                row.update(pages=e.get("fetched", 0), faculty=e.get("faculty", 0),
+                           offices=e.get("offices", 0), queued=e.get("queued", 0))
+            elif e["event"] == "site_done":
+                row.update({k: v for k, v in e.items() if k != "event"})
+                row["queued"] = 0
         if e["event"] == "site_start":
             self.index = max(self.index, e["index"])
             running = [src.institution for _, src in list((self.live.get("active") or {}).values())]
@@ -410,7 +431,8 @@ class BatchJob:
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
             self.state = "failed"
-        _safe(store().update_run, self.id, state=self.state, finished=time.time(), error=self.error,
+        self.finished = time.time()
+        _safe(store().update_run, self.id, state=self.state, finished=self.finished, error=self.error,
               stats=self.stats or {}, xlsx=str(self.xlsx) if self.xlsx else None)
 
     def _save_college(self, college: str) -> None:
@@ -422,6 +444,7 @@ class BatchJob:
 
     def _capture(self, e: dict) -> None:
         if e["event"] == "batch_done":
+            self.phase = "finalizing"
             self.stats = {k: v for k, v in e.items() if k != "event"}
         else:
             self.on_event(e)
@@ -498,9 +521,27 @@ def batch_status(job_id: str):
     job = BATCHES.get(job_id)
     if not job:
         raise HTTPException(404, "batch not found")
-    return {"id": job.id, "state": _state(job), "error": job.error, "current": job.current, "index": job.index,
-            "total": len(job.sources), "elapsed": round(time.time() - job.started), "progress": job.progress,
-            "sites": job.sites, "stats": job.stats, "log": list(job.log)[-60:]}
+    with job.progress_lock:
+        rows = [dict(r) for r in job.rows.values()]
+        sites = sorted((dict(s) for s in job.sites), key=lambda s: s["row"])
+    state = _state(job)
+    terminal = state in {"done", "stopped", "failed"}
+    if terminal:
+        for row in rows:
+            if row["status"] in {"queued", "crawling"}:
+                row["status"] = "not started" if row["status"] == "queued" else "interrupted"
+    completed = sum(r["status"] in {"done", "resumed", "failed", "error"} for r in rows)
+    active = [r for r in rows if r["status"] == "crawling"]
+    return {"id": job.id, "state": state, "phase": job.phase, "error": job.error,
+            "current": ", ".join(r["institution"] for r in active), "index": job.index,
+            "total": len(rows), "elapsed": round((job.finished or time.time()) - job.started),
+            "progress": {"fetched": sum(r["pages"] for r in rows),
+                         "faculty": sum(r["faculty"] for r in rows)},
+            "completed": completed, "active": len(active),
+            "queued": sum(r["status"] == "queued" for r in rows),
+            "failed": sum(r["status"] in {"failed", "error"} for r in rows),
+            "rows": rows, "sites": sites, "stats": job.stats, "log": list(job.log)[-60:]}
+
 
 
 @app.post("/api/batch/{job_id}/stop")
