@@ -170,3 +170,25 @@ campusscraper/
 tests_campus/   fictional college site, portal tests, and extraction/crawl regressions
 campus_sources/ india_colleges_seed.xlsx (62 colleges), college_list_template.xlsx
 ```
+
+
+## Second Pune batch: contact extraction regression
+
+Use `examples/pune-10-new-colleges.csv` for the second ten-college test. It uses the
+verified official SKNCOE mirror, MIT-WPU's public engineering-directory endpoints,
+and RSCOE's named department contact page. The page budgets are 600 for MIT-WPU and
+300 for the other colleges; these are limits, not a completeness guarantee.
+
+```powershell
+.\.venv\Scripts\python.exe -m campusscraper batch examples/pune-10-new-colleges.csv --out pune-retest.xlsx --no-resume
+```
+
+The same CSV can be uploaded in the portal. Start a new run after upgrading.
+Resume caches now include the extraction revision and source/settings fingerprint,
+so older results cannot silently hide extraction fixes or changed input URLs.
+The partial export labels processed colleges separately from failed colleges.
+
+See `docs/pune-second-batch-audit.md` for the controlled saved-page comparison,
+confirmed causes, live checks and remaining limits. Historical PDFs and third-party
+contacts in the research reference are not automatically treated as current faculty
+contacts. No email addresses are generated from name patterns.

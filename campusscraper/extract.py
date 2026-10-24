@@ -22,6 +22,9 @@ def _canon_name(raw: str) -> str | None:
 
 def not_staff_page(url: str, h1: str, breadcrumbs: list[str], meta: dict) -> bool:
     """A page about alumni, testimonials, toppers, recruiters or events lists no staff."""
+    # Placement outcomes are not staff directories, even beneath /faculty/.
+    if re.search(r"special[-_/ ]placement|placement[-_/ ](?:history|records?|highlights?|stories)|student[-_/ ]chapter[-_/ ]activities", urlsplit(url).path, re.I):
+        return True
     path = urlsplit(url).path.replace("-", " ").replace("_", " ")
     for text in (path, h1, " ".join(breadcrumbs[-2:]), meta.get("og:title") or ""):
         if text and NOT_STAFF_SECTION.search(text) and not STAFF_SECTION.search(text):
@@ -116,6 +119,8 @@ def extract_page(page: Page) -> PageResult:
     emb_docs = structured.embedded_json(soup)
     breadcrumbs = structured.html_breadcrumbs(soup) or ld_page.get("breadcrumbs", [])
     all_links = links(soup, url)
+    from .discovery import directory_links, directory_next
+    all_links.extend((u, "Faculty directory") for u in directory_links(soup, url))
     main = main_content(soup)
     lines = annotate(main)
     page_contacts = _page_contacts(soup)
@@ -163,7 +168,7 @@ def extract_page(page: Page) -> PageResult:
         and len(card_recs) <= 1 and len(table_recs) < 2
     )
     profile_evidence = strong or weak
-    if not strong and any(r.profile_url and r.profile_url != url for r in table_recs):
+    if not strong and table_recs:
         profile_evidence = False  # Even a one-row directory can link to a separate CV.
     # A page listing three or more other doctors with links is a listing, even if one name sits in the h1
     # (AOI '/our-doctors/clinical-faculty' put the first doctor's name in a heading).
@@ -184,6 +189,9 @@ def extract_page(page: Page) -> PageResult:
     result = PageResult(url, "other", links=[u for u, _ in all_links], link_texts=dict(all_links), signals=signals)
     result.profile_links = listing.profile_links(all_links)
     result.pagination_links = listing.pagination_links(soup, url)
+    next_directory = directory_next(url, page.html)
+    if next_directory:
+        result.pagination_links.append(next_directory)
     page_context = " ".join([h1_text, " ".join(breadcrumbs)])
     first_heading = next((l.text for l in lines if l.kind == "h" and len(l.text) < 120), "")
     page_depts = (relevance.departments_in(h1_text) or relevance.departments_in(" ".join(breadcrumbs[-2:]))

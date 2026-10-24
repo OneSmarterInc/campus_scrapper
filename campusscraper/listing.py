@@ -333,6 +333,39 @@ HEADER_FIELDS = {
 }
 
 
+def _table_grid(table):
+    """Expand HTML spans before mapping headers to data columns."""
+    grid = []
+    pending = {}
+    for row in table.find_all("tr"):
+        if row.find_parent("table") is not table:
+            continue
+        cells = {}
+        for col, (cell, remaining) in list(pending.items()):
+            cells[col] = cell
+            if remaining <= 1:
+                del pending[col]
+            else:
+                pending[col] = (cell, remaining - 1)
+        col = 0
+        for cell in row.find_all(["td", "th"], recursive=False):
+            while col in cells:
+                col += 1
+            try:
+                width = max(1, min(100, int(cell.get("colspan", 1))))
+                height = max(1, min(100, int(cell.get("rowspan", 1))))
+            except (ValueError, TypeError):
+                width = height = 1
+            for offset in range(width):
+                cells[col + offset] = cell
+                if height > 1:
+                    pending[col + offset] = (cell, height - 1)
+            col += width
+        if cells:
+            grid.append((row, [cells.get(i) for i in range(max(cells) + 1)]))
+    return grid
+
+
 def tables(main: Tag, base_url: str) -> list[PersonRecord]:
     """Faculty tables: header row with Name + Designation/Department/Qualification."""
     out: list[PersonRecord] = []
@@ -340,11 +373,11 @@ def tables(main: Tag, base_url: str) -> list[PersonRecord]:
         heading = table.find_previous(["h1", "h2", "h3", "h4", "caption"])
         if heading and re.search(r"\bstudents?\b|research scholars|office[- ]bearers", heading.get_text(" ", strip=True), re.I) and not re.search(r"faculty|staff", heading.get_text(" ", strip=True), re.I):
             continue
-        rows = table.find_all("tr")
+        rows = _table_grid(table)
         if len(rows) < 2:
             continue
-        header_cells = rows[0].find_all(["th", "td"])
-        headers = [" ".join(c.get_text(" ", strip=True).lower().split()) for c in header_cells]
+        header_cells = rows[0][1]
+        headers = [" ".join(c.get_text(" ", strip=True).lower().split()) if c else "" for c in header_cells]
         mapping: dict[int, str] = {}
         for idx, h in enumerate(headers):
             h2 = " ".join(re.sub(r"[^a-z ]", " ", h).split())
@@ -353,18 +386,21 @@ def tables(main: Tag, base_url: str) -> list[PersonRecord]:
                 mapping[idx] = f
         if "name" not in mapping.values() or len(mapping) < 2:
             continue
-        for row in rows[1:]:
-            cells = row.find_all(["td", "th"])
+        for row, cells in rows[1:]:
             if len(cells) < len(mapping):
                 continue
             rec = PersonRecord(source_url=base_url, page_type="listing")
             rec.section_role = section_role(table)
-            snippet = " | ".join(c.get_text(" ", strip=True) for c in cells)[:500]
+            snippet = " | ".join(c.get_text(" ", strip=True) if c else "" for c in cells)[:500]
             for idx, f in mapping.items():
-                if idx >= len(cells):
+                if idx >= len(cells) or cells[idx] is None:
                     continue
                 value = " ".join(cells[idx].get_text(" ", strip=True).split())
                 if not value:
+                    continue
+                if f == "experience_years" and sum(v == f for v in mapping.values()) > 1:
+                    # A grouped header (industry + academic) is not a scalar total.
+                    # Keep no guessed total when the source does not label one.
                     continue
                 if f == "name":
                     parts = [t for t in cells[idx].get_text("\n", strip=True).split("\n") if t.strip()]
@@ -403,6 +439,8 @@ def tables(main: Tag, base_url: str) -> list[PersonRecord]:
                 else:
                     rec.set(f, value, "table_row", snippet)
             if rec.get("name"):
+                row_addrs = emails.find(row.get_text(" | ", strip=True)) + emails.from_links(row)
+                assign_emails(rec, list(dict.fromkeys(row_addrs)), "table_row", snippet, base_url)
                 if not rec.profile_url:
                     rec.profile_url = _profile_link(row, rec.get("name"), base_url)
                 academic_links(rec, row, base_url, "table_row")

@@ -224,7 +224,9 @@ class Fetcher:
         self._pace(url)
         with self._lock:
             self.requests_made += 1
-        with self.client.stream("GET", url) as resp:
+        from .discovery import directory_form
+        form = directory_form(url)
+        with self.client.stream("POST" if form else "GET", url, **({"data": form} if form else {})) as resp:
             body = bytearray()
             for chunk in resp.iter_bytes():
                 body.extend(chunk)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 
 from .models import PersonRecord
+from . import emails
 
 SHARED_THRESHOLD = 2  # seen on this many different people -> department/office contact
 
@@ -36,7 +37,12 @@ def demote_sitewide(records: list[PersonRecord], value_pages: dict[str, set[str]
     for r in records:
         mine = {u for u in [r.source_url, r.profile_url, *r.found_on] if u}
         for own, desk in (("phone", "contact_phone"), ("email", "contact_email")):
-            gone = [v for v in _split(r.get(own)) if len(value_pages.get(v, set()) - mine) >= extra_pages]
+            gone = [v for v in _split(r.get(own))
+                    if len(value_pages.get(v, set()) - mine) >= extra_pages
+                    and not (own == "email" and emails.is_personal(v, r.get("name"))
+                             and any(e.field == "email" and e.value == v
+                                     and e.layer in {"table_row", "listing_card", "labels", "template", "jsonld", "microdata"}
+                                     for e in r.evidence))]
             if gone:
                 _move(r, own, desk, gone)
                 moved += len(gone)

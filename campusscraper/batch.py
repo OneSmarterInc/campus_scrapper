@@ -8,6 +8,7 @@ finished sites.
 from __future__ import annotations
 
 import json
+import hashlib
 from collections import Counter
 import re
 import threading
@@ -22,6 +23,15 @@ from .crawl import Crawler, CrawlResult, Merger, PageLog, merge_offices
 from .export import to_xlsx
 from .models import OfficeRecord, PersonRecord
 from .sources import Source
+
+
+EXTRACTION_REVISION = 2
+
+
+def _cache_key(src, base, per_site_pages):
+    settings = {**base.__dict__, "max_pages": src.max_pages or per_site_pages}
+    payload = {"revision": EXTRACTION_REVISION, "source": src.as_dict(), "settings": settings}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _slug(text: str) -> str:
@@ -102,7 +112,8 @@ def snapshot_xlsx(live: dict, out: str | Path) -> Path:
     fac = result.faculty
     result.stats = {
         "partial": "yes - downloaded while the batch was running",
-        "colleges_finished": len(live.get("summary") or []), "colleges_total": len(sources),
+        "colleges_processed": len(live.get("summary") or []),
+        "colleges_failed": sum(s["status"] in {"failed", "error"} for s in summary), "colleges_total": len(sources),
         "pages_fetched": len(pages), "people_found": len(result.doctors), "faculty": len(fac),
         "student_offices": len(offices),
         "faculty_with_own_phone": sum(1 for d in fac if d.get("phone")),
@@ -110,7 +121,7 @@ def snapshot_xlsx(live: dict, out: str | Path) -> Path:
         "faculty_with_any_contact": sum(1 for d in fac if any(d.get(f) for f in CONTACT_FIELDS)),
         "seconds": round(time.time() - live.get("t0", time.time()), 1),
     }
-    return to_xlsx(result, out, sites=summary)
+    return to_xlsx(result, out, sites=sorted(summary, key=lambda s: s["row"]))
 
 
 CONTACT_FIELDS = ("phone", "email", "contact_phone", "contact_email")
@@ -156,8 +167,15 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
         slug = f"{_slug(src.institution)}-r{src.row}"
         jpath = site_dir / f"{slug}.json"
         progress({"event": "site_start", "row": src.row, "index": i, "total": len(sources), "institution": src.institution, "urls": src.urls})
+        cache_key = _cache_key(src, base, per_site_pages)
+        cached = None
         if resume and jpath.is_file():
-            data = json.loads(jpath.read_text(encoding="utf-8"))
+            try:
+                cached = json.loads(jpath.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                pass
+        if cached and cached.get("cache_key") == cache_key:
+            data = cached
             status = "resumed"
         else:
             cfg = ScrapeConfig(**{
@@ -186,6 +204,7 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
             all_failed = (bool(data["pages"]) and all(p["page_type"] == "error" for p in data["pages"])) or (
                 not data["pages"] and bool(data["stats"].get("blocked_by_robots")))
             if not stopped and not data["error"] and not all_failed:  # a college cut short by Stop is crawled again next time
+                data["cache_key"] = cache_key
                 jpath.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             status = "error" if data["error"] else ("stopped" if stopped else ("failed" if all_failed else "done"))
         docs = [PersonRecord.from_full_dict(d) for d in data["doctors"]]
@@ -279,4 +298,4 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
         "colleges_at_once": n,
     }
     progress({"event": "batch_done", **result.stats})
-    return to_xlsx(result, out, sites=summary)
+    return to_xlsx(result, out, sites=sorted(summary, key=lambda s: s["row"]))

@@ -83,7 +83,7 @@ def score(rec: PersonRecord, page_context: str = "") -> None:
     title = " | ".join(str(rec.get(f) or "") for f in ("designation", "specialty"))
     terms: list[str] = []
     total = 0.0
-    if TEACHING_WORDS.search(title):
+    if TEACHING_WORDS.search(title) or re.match(r"^Prof\.?\s", str(rec.get("name") or ""), re.I):
         total += 1.0
         terms.append("teaching title")
     elif rec.get("qualifications") and any(q.split()[0] in ("PhD", "MTech", "ME", "MPhil", "MSc", "MCA", "MBA")

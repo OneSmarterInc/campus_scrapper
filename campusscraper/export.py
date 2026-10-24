@@ -116,7 +116,7 @@ def to_xlsx(result: CrawlResult, path: str | Path, sites: list[dict] | None = No
            {"Page text": 70, "Value": 40, "Page URL": 45})
     _sheet(wb, "Pages", ["URL", "HTTP status", "Page type", "People on page", "Depth", "Note"],
            [[p.url, p.status, p.page_type, p.doctors, p.depth, p.note] for p in result.pages], {"URL": 70})
-    summary = [["Start URL(s)", ", ".join(result.start_urls)], ["Run finished", datetime.now().strftime("%Y-%m-%d %H:%M")]]
+    summary = [["Start URL(s)", ", ".join(result.start_urls)], ["Exported at", datetime.now().strftime("%Y-%m-%d %H:%M")]]
     summary += [[k.replace("_", " "), json.dumps(v) if isinstance(v, dict) else v] for k, v in result.stats.items()]
     fill = {f: sum(1 for d in onco if d.get(f)) for f in COLUMNS}
     summary.append(["", ""])

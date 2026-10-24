@@ -63,6 +63,8 @@ def sub_specialties(text: str) -> list[str]:
 
 def split_designation(text: str) -> tuple[str | None, str | None]:
     """'Associate Professor, Department of CSE' -> ('Associate Professor', 'CSE')."""
+    text = re.sub(r"\bAsst\.?\s*Prof\.?", "Assistant Professor", text, flags=re.I)
+    text = re.sub(r"\bAssoc\.?\s*Prof\.?", "Associate Professor", text, flags=re.I)
     m = DESIGNATION_RE.search(text)
     if not m:
         return None, None
@@ -482,7 +484,7 @@ def patterns(rec: PersonRecord, lines: list[Line], name_idx: int, main: Tag, url
 # --------------------------------------------------------------------------
 # Value checks. Each field must look like what it is; anything else is dropped.
 TITLE_WORD = re.compile(
-    r"\b(?:professor|lecturer|reader|dean|director|principal|head|hod|chair(?:man|person)?|registrar|chancellor|"
+    r"\b(?:professor|prof|lecturer|reader|dean|director|principal|head|hod|chair(?:man|person)?|registrar|chancellor|"
     r"faculty|scientist|fellow|officer|coordinator|in-?charge|incharge|assistant|associate|adjunct|visiting|emeritus|"
     r"instructor|technician|librarian|tutor|researcher|vice|senior|guest|honorary)\b", re.I)
 DEPT_BAD = re.compile(r"^(?:home|faculty|people|staff|our team|team|about|about us|department|departments|academics)$|"

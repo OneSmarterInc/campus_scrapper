@@ -212,6 +212,8 @@ class Crawler:
             return 1000.0  # URLs given by the user are always fetched first, whatever their path
         if p.path.lower().endswith(".pdf") and hint in ("profile", "focus_profile"):
             return 210.0 - 4 * depth  # Only PDFs linked from an identified person's card/row.
+        if re.search(r"special[-_/]placement|placement[-_/](?:history|records?|highlights?|stories)|faculty[-_/]achievements?|student[-_/]chapter[-_/]activities", path, re.I):
+            return None
         if SKIP_URL.search(path) or SKIP_URL.search(url):
             return None
         s = 10.0

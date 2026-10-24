@@ -288,3 +288,131 @@ def test_department_head_repeated_in_faculty_cards_keeps_identity_and_contact():
     people=[d for d in result.doctors if d.get('name')=='Prof. Anitha Rao']
     assert len(people)==1 and people[0].is_relevant
     assert people[0].get('email')=='anitha.rao@college.example'
+
+
+def test_merged_headers_preserve_email_and_research_columns():
+    pr=page('<h1>Faculty</h1><table><tr><th rowspan="2">Name</th><th rowspan="2">Designation</th>'
+            '<th colspan="2">Experience</th><th rowspan="2">Research Interests</th><th rowspan="2">Email</th></tr>'
+            '<tr><th>Industry</th><th>Academic</th></tr>'
+            '<tr><td>Dr. Anitha Rao</td><td>Professor</td><td>2</td><td>7.5</td>'
+            '<td>Power Systems</td><td>anitha.rao@college.example</td></tr></table>')
+    r=next(r for r in pr.doctors if r.get('name')=='Dr. Anitha Rao')
+    assert r.get('email')=='anitha.rao@college.example'
+    assert r.get('research_areas')==['Power Systems']
+
+
+def test_person_row_email_without_recognized_header():
+    pr=page('<h1>Faculty</h1><table><tr><th>Name</th><th>Designation</th><th>Reach me</th></tr>'
+            '<tr><td>Dr. Anitha Rao</td><td>Professor</td><td>anitha.rao@college.example</td></tr>'
+            '<tr><td>Dr. Priya Sharma</td><td>Professor</td><td>priya.sharma@college.example</td></tr></table>')
+    assert {r.get('email') for r in pr.doctors}=={'anitha.rao@college.example','priya.sharma@college.example'}
+
+
+@pytest.mark.parametrize('path',['special-placement.aspx','placement-history','placement-records','student-chapter-activities-mech/'])
+def test_outcomes_and_external_speakers_not_people_even_under_faculty(path):
+    u=URL+path
+    pr=extract_page(Page(u,u,200,'<h1>Faculty activities</h1><table><tr><th>Name</th><th>Designation</th></tr>'
+                        '<tr><td>Dr. Anitha Rao</td><td>Professor</td></tr></table>'))
+    assert not pr.doctors
+
+
+def test_repeated_named_email_kept_but_footer_contact_demoted():
+    from campusscraper.contacts import demote_sitewide, demote_shared
+    from campusscraper.profile import assign_emails
+    r=person();assign_emails(r,['anitha.rao@college.example'],'table_row','Dr. Anitha Rao | anitha.rao@college.example',URL)
+    r.set('phone','+91 2023456789','patterns')
+    vp={v:{URL+'a',URL+'b',URL+'c'} for v in [r.get('email'),r.get('phone')]}
+    demote_sitewide([r],vp)
+    assert r.get('email')=='anitha.rao@college.example'
+    assert not r.get('phone') and r.get('contact_phone')=='+91 2023456789'
+    # Independently shared attribution still requires caution.
+    other=person('Dr. Priya Sharma');other.set('email',r.get('email'),'labels')
+    demote_shared([r,other])
+    assert not r.get('email') and not other.get('email')
+
+
+def test_abbreviated_professor_roles_survive_cleaning():
+    from campusscraper.profile import split_designation
+    from campusscraper.relevance import score
+    assert split_designation('Asst. Prof.')[0]=='Assistant Professor'
+    assert split_designation('Assoc. Prof.')[0]=='Associate Professor'
+    r=person();r.values['designation']='Asst. Prof.';clean_fields(r)
+    assert r.get('designation')
+    r=person('Prof. Anitha Rao');r.values.pop('designation');score(r)
+    assert r.is_relevant
+
+
+def test_directory_api_uses_observed_ids_and_paginates():
+    from bs4 import BeautifulSoup
+    from campusscraper.discovery import directory_links, directory_form, directory_next
+    soup=BeautifulSoup('<select id="fac_school"><option value="">All</option><option value="2">Engineering</option></select>','html.parser')
+    links=directory_links(soup,'https://mitwpu.edu.in/faculty-members')
+    assert len(links)==1 and directory_form(links[0])['school_id']=='2'
+    assert directory_next(links[0],'<div>Faculty</div>###156').endswith('page=1')
+    assert directory_next(links[0].replace('page=0','page=1'),'<div>Faculty</div>###156') is None
+    assert directory_links(soup,'https://other.example/faculty-members')==[]
+    assert directory_form('https://other.example/faculty/showFacultyDataAjax?school_id=2') is None
+
+
+def test_resume_cache_invalidated_by_extractor_and_settings(monkeypatch):
+    from campusscraper import batch
+    from campusscraper.sources import Source
+    src=Source(2,'Example',[URL]);cfg=ScrapeConfig()
+    key=batch._cache_key(src,cfg,150)
+    assert key!=batch._cache_key(src,cfg,300)
+    src.urls.append(URL+'other')
+    assert key!=batch._cache_key(src,cfg,150)
+    src.urls.pop();monkeypatch.setattr(batch,'EXTRACTION_REVISION',99)
+    assert key!=batch._cache_key(src,cfg,150)
+
+
+def test_directory_post_and_profiles_flow_through_crawler(monkeypatch):
+    import httpx
+    from campusscraper.discovery import directory_form
+    c=Crawler(ScrapeConfig(max_pages=4,workers=1,render='never',use_sitemaps=False,
+                           respect_robots=False,delay_seconds=0))
+    seen=[]
+    def handler(req):
+        seen.append((req.method,str(req.url),req.content.decode()))
+        if req.url.path=='/faculty-members':
+            html='<select id="fac_school"><option value="2">Engineering</option></select>'
+        elif req.url.path=='/faculty/showFacultyDataAjax':
+            assert req.method=='POST' and 'school_id=2' in req.content.decode()
+            html='<a href="/faculty/anitha-rao">Dr. Anitha Rao</a>###1'
+        else:
+            html='<h1>Dr. Anitha Rao</h1><p>Professor</p><p>Email: anitha.rao@college.example</p>'
+        return httpx.Response(200,text=html,headers={'content-type':'text/html'},request=req)
+    c.fetcher.client.close();c.fetcher.client=httpx.Client(transport=httpx.MockTransport(handler))
+    result=c.run(['https://mitwpu.edu.in/faculty-members'])
+    assert any(method=='POST' for method,_,_ in seen)
+    assert any(r.get('email')=='anitha.rao@college.example' for r in result.faculty)
+    assert len(result.pages)==3
+
+
+def test_grouped_experience_does_not_export_industry_as_total():
+    pr=page('<h1>Faculty</h1><table><tr><th>Name</th><th>Designation</th><th colspan="2">Experience</th></tr>'
+            '<tr><td>Dr. Anitha Rao</td><td>Professor</td><td>2</td><td>7.5</td></tr></table>')
+    r=next(r for r in pr.doctors if r.get('name')=='Dr. Anitha Rao')
+    assert not r.get('experience_years')
+
+
+def test_batch_reruns_when_cached_settings_change(monkeypatch,tmp_path):
+    from campusscraper import batch
+    from campusscraper.crawl import CrawlResult, PageLog
+    from campusscraper.sources import Source
+    calls=[]
+    class FakeCrawler:
+        def __init__(self,*args,**kwargs): pass
+        def run(self,urls):
+            calls.append(urls)
+            return CrawlResult(urls,pages=[PageLog(URL,200,'other',0,0,'')],stats={'stop_reason':'queue_exhausted'})
+    monkeypatch.setattr(batch,'Crawler',FakeCrawler)
+    src=[Source(2,'Example',[URL])];out=tmp_path/'out.xlsx';cfg=ScrapeConfig()
+    batch.run_batch(src,out,cfg,150)
+    batch.run_batch(src,out,cfg,150)
+    assert len(calls)==1
+    batch.run_batch(src,out,cfg,300)
+    assert len(calls)==2
+    monkeypatch.setattr(batch,'EXTRACTION_REVISION',99)
+    batch.run_batch(src,out,cfg,300)
+    assert len(calls)==3
