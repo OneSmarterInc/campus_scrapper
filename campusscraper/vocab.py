@@ -89,13 +89,13 @@ def normalize_quals(text: str) -> str:
 
 # --------------------------------------------------------------------------
 # Names. Faculty pages write 'Dr.', 'Prof.', and also 'Mr.', 'Ms.', 'Mrs.', 'Shri', 'Smt.'.
-HONORIFIC = (r"(?:Dr|DR|Prof|PROF|Professor|PROFESSOR|Mr|MR|Mrs|MRS|Ms|MS(?=\.)|Miss|Shri|Sri|Smt|Kum|Er|"
+HONORIFIC = (r"(?:Dr|DR|Prof|PROF|Professor|PROFESSOR|Mr|MR|Mrs|MRS|Ms|MS|Miss|Shri|Sri|Smt|Kum|Er|"
              r"Doctor(?=\s))")
 _RANK = r"(?:Brig|Col|Lt\.?\s*Col|Maj|Gen|Capt|Cdr|Retd|Prof|Dr)"
-_PREFIX_EXTRA = rf"(?:\(\s*{_RANK}\.?\s*(?:\(?retd\.?\)?)?\s*\)\s*|{_RANK}\.?\s+|{HONORIFIC}\.?\s+)"
-NAME_TOKEN = r"[A-Z](?:[a-zA-Z'’\-]|\.(?=[A-Z]))*\.?"
+_PREFIX_EXTRA = rf"(?:\(\s*{_RANK}\.?\s*(?:\(?retd\.?\)?)?\s*\)\s*|{_RANK}\.?\s+|{HONORIFIC}(?![A-Za-z])(?:\.\s*|\s+))"
+NAME_TOKEN = r"(?:\.(?=[A-Z]\.))?[A-Z](?:[a-zA-Z'’\-]|\.(?=[A-Z]))*\.?"
 NAME_RE = re.compile(
-    rf"(?<![A-Za-z]){HONORIFIC}\.?\s*{_PREFIX_EXTRA}{{0,3}}"
+    rf"(?<![A-Za-z]){HONORIFIC}(?![A-Za-z])\.?\s*{_PREFIX_EXTRA}{{0,3}}"
     rf"((?:{NAME_TOKEN}\s+){{0,4}}{NAME_TOKEN})"
 )
 NAME_STOP = {
@@ -145,11 +145,11 @@ def clean_name(raw: str) -> str | None:
             return None
         if bare.endswith("'s") and bare[:-2].lower() in _NAME_STOP_LOWER:
             break
-        if bare.lower() in _NAME_STOP_LOWER or bare.upper() in _QUALS_UPPER:
+        if (bare.lower() in _NAME_STOP_LOWER and not (bare.lower() == "more" and out)) or bare.upper() in _QUALS_UPPER:
             break
         if len(bare) > 5 and _ROLE_WORD.search(bare) and out:
             break
-        out.append(tok.rstrip(","))
+        out.append(tok.rstrip(",").lstrip("."))
     while out and len(out) > 1 and len(out[-1].strip(".")) <= 1 and not out[-1].strip(".").isupper():
         out.pop()
     name = " ".join(out).strip(" .,-")

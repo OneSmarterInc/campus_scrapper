@@ -67,6 +67,8 @@ def split_designation(text: str) -> tuple[str | None, str | None]:
     if not m:
         return None, None
     full = m.group(0).strip(" -–,:")
+    if re.fullmatch(r"Head of (?:the )?Department", full, re.I):
+        return full, None
     hod = re.match(r"^(Head of (?:the )?Department)\s*(?:of\s+|[-–,:]\s*|\(\s*)(.+?)\)?$", full, re.I)
     if hod:
         return "Head of Department", re.sub(r"^(?:the\s+)?(?:department|dept\.?)\s+of\s+", "", hod.group(2), flags=re.I) or None
@@ -213,10 +215,18 @@ def primary_name(lines: list[Line], soup: BeautifulSoup, meta: dict, url: str, s
                 n = find_name_in_text(line.text)
                 if n and len(line.text) < 90:
                     return n, line.text, i, "heading"
+    # Coordinator pages often retain an old person's name in their SEO title.
+    # Prefer the single person explicitly named in the visible introductory text.
+    visible = [(i, l, find_name_in_text(l.text)) for i, l in enumerate(lines[:40])
+               if len(l.text) < 100 and not re.search(r"@|https?://", l.text)]
+    visible = [(i, l, n) for i, l, n in visible if n]
+    if len({n.casefold() for _, _, n in visible}) == 1:
+        i, line, n = visible[0]
+        return n, line.text, i, "heading"
     for key in ("og:title", "twitter:title", "title"):
         if meta.get(key):
             n = find_name_in_text(meta[key])
-            if n:
+            if n and any(_surname(n) in l.text.lower() for l in lines[:40]):
                 return n, meta[key], _index_of(lines, n), "meta"
     if h1:
         n = plain_person_name(h1.get_text(" ", strip=True))
@@ -516,7 +526,7 @@ def clean_fields(rec: PersonRecord) -> None:
     dept = rec.get("department")
     if dept:
         d = re.sub(r"^(?:the\s+)?(?:department|dept\.?)\s+of\s+", "", str(dept), flags=re.I).strip(" .,-–:")
-        if not d or DEPT_BAD.search(d) or len(d) > 120 or "@" in d or qualification_line(d):
+        if not d or DEPT_BAD.search(d) or len(d) > 120 or "@" in d or qualification_line(d) or re.match(r"(?:B|M)\s*\.?\s*(?:E|Tech)\s*\.?\s*\(", d, re.I) or re.search(r"research|interests?|expertise|speciali[sz]ation|,", d, re.I):
             _drop(rec, "department")
         else:
             canon = departments_in(d)

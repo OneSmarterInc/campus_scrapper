@@ -63,11 +63,13 @@ def main_content(soup: BeautifulSoup) -> Tag:
             continue
         if t.attrs is None:
             continue
-        if _is_hidden(t) or (t.get("role") in ("navigation", "contentinfo", "banner") and not t.find("h1")):
+        academic_panel = bool(re.search(r"\b(?:professor|lecturer|designation)\b", t.get_text(" ", strip=True)[:1500], re.I)
+                              and t.find(["h2", "h3", "h4", "h5", "table"]))
+        if (_is_hidden(t) and not academic_panel) or (t.get("role") in ("navigation", "contentinfo", "banner") and not t.find("h1")):
             t.decompose()
             continue
         attrs = _attr_text(t)
-        if attrs and BOILERPLATE_RE.search(attrs) and not t.find("h1") and len(t.get_text(" ", strip=True)) < 4000:
+        if attrs and BOILERPLATE_RE.search(attrs) and not academic_panel and not t.find("h1") and len(t.get_text(" ", strip=True)) < 4000:
             # Keep big containers that merely carry a theme class; drop menus/footers.
             if t.name in ("div", "section", "ul", "aside", "header", "span") :
                 t.decompose()
@@ -127,10 +129,12 @@ def links(soup: BeautifulSoup, base_url: str) -> list[tuple[str, str]]:
         href = a["href"].strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "whatsapp:")):
             continue
-        absolute = urljoin(base_url, href)
+        try:
+            absolute = normalize_url(urljoin(base_url, href))
+        except ValueError:
+            continue  # One malformed link must not discard the faculty on the whole page.
         if urlsplit(absolute).scheme not in ("http", "https"):
             continue
-        absolute = normalize_url(absolute)
         if absolute in seen:
             continue
         seen.add(absolute)

@@ -22,7 +22,7 @@ from .vocab import (
 NAME_TAGS = ("a", "h2", "h3", "h4", "h5", "h6", "strong", "b", "p", "span", "div", "td", "li", "figcaption")
 LINK_TEXT_HINT = re.compile(r"view|profile|know more|read more|details|more info|meet|vidwan|irins", re.I)
 BOOKING = re.compile(r"apply|admission|enquir|whatsapp|video|login|register|scholar\.google|orcid\.org|scopus|"
-                     r"researchgate|linkedin|vidwan|irins|dblp|\.pdf(?:$|\?)", re.I)
+                     r"researchgate|linkedin|vidwan|irins|dblp", re.I)
 HONORIFIC_START = re.compile(r"^\s*(?:Dr|Prof|Doctor|Professor|Mr|Mrs|Ms|Miss|Shri|Sri|Smt|Kum|Er)\b\.?", re.I)
 
 
@@ -80,7 +80,10 @@ def _profile_link(card: Tag, name: str, base_url: str) -> str | None:
         href = a["href"].strip()
         if href.startswith(("#", "tel:", "mailto:", "javascript:", "whatsapp:")):
             continue
-        absolute = normalize_url(urljoin(base_url, href))
+        try:
+            absolute = normalize_url(urljoin(base_url, href))
+        except ValueError:
+            continue
         text = a.get_text(" ", strip=True)
         if BOOKING.search(href) or (BOOKING.search(text) and not LINK_TEXT_HINT.search(text)):
             continue
@@ -94,10 +97,16 @@ def _profile_link(card: Tag, name: str, base_url: str) -> str | None:
         if best is None or score > best[0]:
             best = (score, absolute)
     if card.name == "a" and card.get("href"):
-        return normalize_url(urljoin(base_url, card["href"]))
+        try:
+            return normalize_url(urljoin(base_url, card["href"]))
+        except ValueError:
+            pass
     parent_a = card.find_parent("a", href=True)
     if (best is None or best[0] == 0) and parent_a:
-        return normalize_url(urljoin(base_url, parent_a["href"]))
+        try:
+            return normalize_url(urljoin(base_url, parent_a["href"]))
+        except ValueError:
+            pass
     return best[1] if best and best[0] > 0 else None
 
 
@@ -253,17 +262,21 @@ def cards(main: Tag, base_url: str, exclude: set[str] | None = None) -> list[Per
     exclude = {e.casefold() for e in (exclude or set())}
     out: list[PersonRecord] = []
     used_cards: list[Tag] = []
-    seen: set[str] = set()
+    by_name: dict[str, PersonRecord] = {}
     for node, name in nodes:
-        if name.casefold() in seen or name.casefold() in exclude:
+        if name.casefold() in exclude:
             continue
         card = _card_for(node, name, names)
         if any(card is c or card in c.descendants for c in used_cards):
             # Another name already owns this region (e.g. name repeated in alt text).
             continue
         used_cards.append(card)
-        seen.add(name.casefold())
-        out.append(card_record(card, name, base_url))
+        rec = card_record(card, name, base_url)
+        if name.casefold() in by_name:
+            by_name[name.casefold()].absorb(rec)
+        else:
+            by_name[name.casefold()] = rec
+            out.append(rec)
     return out
 
 
@@ -324,6 +337,9 @@ def tables(main: Tag, base_url: str) -> list[PersonRecord]:
     """Faculty tables: header row with Name + Designation/Department/Qualification."""
     out: list[PersonRecord] = []
     for table in main.find_all("table"):
+        heading = table.find_previous(["h1", "h2", "h3", "h4", "caption"])
+        if heading and re.search(r"\bstudents?\b|research scholars|office[- ]bearers", heading.get_text(" ", strip=True), re.I) and not re.search(r"faculty|staff", heading.get_text(" ", strip=True), re.I):
+            continue
         rows = table.find_all("tr")
         if len(rows) < 2:
             continue
@@ -365,7 +381,10 @@ def tables(main: Tag, base_url: str) -> list[PersonRecord]:
                         rec.set("name", name, "table_row", snippet)
                         a = cells[idx].find("a", href=True)
                         if a:
-                            rec.profile_url = normalize_url(urljoin(base_url, a["href"]))
+                            try:
+                                rec.profile_url = normalize_url(urljoin(base_url, a["href"]))
+                            except ValueError:
+                                pass
                 elif f == "qualifications":
                     rec.set(f, parse_qualifications(value, labelled=True) or [value], "table_row", snippet)
                 elif f == "designation":
@@ -384,6 +403,8 @@ def tables(main: Tag, base_url: str) -> list[PersonRecord]:
                 else:
                     rec.set(f, value, "table_row", snippet)
             if rec.get("name"):
+                if not rec.profile_url:
+                    rec.profile_url = _profile_link(row, rec.get("name"), base_url)
                 academic_links(rec, row, base_url, "table_row")
                 # A table caption/heading often names the department.
                 heading = table.find_previous(["h1", "h2", "h3", "h4", "caption"])
@@ -413,7 +434,10 @@ def pagination_links(main_soup: Tag, base_url: str) -> list[str]:
     for a in main_soup.find_all("a", href=True):
         text = a.get_text(" ", strip=True)
         rel = " ".join(a.get("rel") or [])
-        href = normalize_url(urljoin(base_url, a["href"]))
+        try:
+            href = normalize_url(urljoin(base_url, a["href"]))
+        except ValueError:
+            continue
         p = urlsplit(href)
         is_pager = (
             "next" in rel
@@ -425,5 +449,8 @@ def pagination_links(main_soup: Tag, base_url: str) -> list[str]:
                 out.append(href)
     for link in main_soup.find_all("link", rel=lambda r: r and "next" in r):
         if link.get("href"):
-            out.append(normalize_url(urljoin(base_url, link["href"])))
+            try:
+                out.append(normalize_url(urljoin(base_url, link["href"])))
+            except ValueError:
+                continue
     return out

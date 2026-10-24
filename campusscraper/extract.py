@@ -31,6 +31,8 @@ def not_staff_page(url: str, h1: str, breadcrumbs: list[str], meta: dict) -> boo
 
 def is_student_record(rec: PersonRecord) -> bool:
     """A person whose own card or title marks them as a student. Such records are dropped."""
+    if rec.section_role == "student" or re.search(r"\bteaching assistant\b|\bresearch scholar\b", str(rec.get("designation") or ""), re.I):
+        return True  # Teaching assistants may be enrolled students; do not retain ambiguous cases.
     if rec.get("designation") and not offices.is_student_line(str(rec.get("designation"))):
         return False
     texts = [str(rec.get("designation") or "")] + [e.snippet for e in rec.evidence if e.field in ("name", "designation")][:3]
@@ -146,7 +148,7 @@ def extract_page(page: Page) -> PageResult:
     tpl_hit = templates.apply_profile(soup, url, tpl_rec)
     tpl_cards = templates.apply_listing(soup, url)
 
-    exclude = {name} if name else set()
+    exclude = {name} if name and (h1_name or single_struct is not None or (tpl_hit and tpl_rec.get("name"))) else set()
     card_recs = tpl_cards if tpl_cards else listing.cards(main, url, exclude)
     if not card_recs and not tpl_cards:
         card_recs = listing.repeated_cards(main, url)
@@ -161,6 +163,8 @@ def extract_page(page: Page) -> PageResult:
         and len(card_recs) <= 1 and len(table_recs) < 2
     )
     profile_evidence = strong or weak
+    if not strong and any(r.profile_url and r.profile_url != url for r in table_recs):
+        profile_evidence = False  # Even a one-row directory can link to a separate CV.
     # A page listing three or more other doctors with links is a listing, even if one name sits in the h1
     # (AOI '/our-doctors/clinical-faculty' put the first doctor's name in a heading).
     linked_cards = {normalize_url(urljoin(url, c.profile_url)) for c in card_recs if c.profile_url} - {normalize_url(url)}

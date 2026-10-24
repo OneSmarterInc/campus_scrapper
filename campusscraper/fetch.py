@@ -62,7 +62,7 @@ def normalize_url(url: str) -> str:
 
 def _is_dns_failure(text: str) -> bool:
     """The hostname does not exist: no client, browsers included, can reach it."""
-    return bool(re.search(r"getaddrinfo|name or service not known|err_name_not_resolved|errno 11001|"
+    return bool(re.search(r"name or service not known|err_name_not_resolved|errno 11001|"
                           r"nodename nor servname|no address associated", text or "", re.I))
 
 
@@ -119,6 +119,7 @@ class Fetcher:
         self._robots_lock = threading.RLock()  # one robots.txt fetch per site, even with parallel workers
         self.browser_hosts: set[str] = set()   # sites that only answer real browsers
         self._dead_hosts: set[str] = set()     # hostnames DNS cannot resolve; each fails once, then instantly
+        self._successful_hosts: set[str] = set()
         self.requests_made = 0
 
     def close(self) -> None:
@@ -175,7 +176,7 @@ class Fetcher:
         except httpx.HTTPError as exc:
             log.warning("robots.txt unavailable to plain HTTP for %s: %s", origin, exc)
             self.robots_status[origin] = f"unreachable to plain HTTP ({type(exc).__name__}), no rules"
-            if _is_dns_failure(str(exc)):
+            if _is_dns_failure(str(exc)) and urlsplit(origin).netloc not in self._successful_hosts:
                 self._dead_hosts.add(urlsplit(origin).netloc)
                 self.robots_status[origin] = "hostname does not exist (DNS lookup failed)"
             elif self._browser_ok():
@@ -212,7 +213,6 @@ class Fetcher:
     def _pace(self, url: str) -> None:
         host = urlsplit(url).netloc
         delay = max(self.cfg.delay_seconds, self._robots.get(self._origin(url), AllowAll()).crawl_delay)
-        delay = min(delay, 30.0)
         with self._lock:
             now = time.monotonic()
             due = max(now, self._next_time.get(host, now))
@@ -253,7 +253,7 @@ class Fetcher:
                 resp = self._raw_get(url)
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
-                if _is_dns_failure(last_error):
+                if _is_dns_failure(last_error) and host not in self._successful_hosts:
                     self._dead_hosts.add(host)
                     return Page(url, url, 0, "", error="hostname does not exist (DNS lookup failed)")
                 if _is_ssl_or_proxy(exc) or self.stop_event.is_set():
@@ -271,6 +271,20 @@ class Fetcher:
                 return self._via_browser(url, final, resp.status_code, ctype)
             if resp.status_code >= 400:
                 return Page(url, final, resp.status_code, "", ctype, error=f"HTTP {resp.status_code}")
+            if ctype == "application/pdf" or urlsplit(final).path.lower().endswith(".pdf"):
+                try:
+                    if final != url:
+                        self.check_allowed(final)
+                    if len(resp.content) > self.cfg.max_bytes:
+                        raise ValueError("PDF exceeds response size limit")
+                    from io import BytesIO
+                    from pypdf import PdfReader
+                    reader = PdfReader(BytesIO(resp.content))
+                    text = "\n".join(p.extract_text() or "" for p in reader.pages[:2])
+                    self._successful_hosts.add(host)
+                    return Page(url, final, resp.status_code, text, "application/pdf")
+                except Exception as exc:
+                    return Page(url, final, resp.status_code, "", "application/pdf", error=f"PDF could not be read: {type(exc).__name__}")
             if ctype and not ctype.startswith(HTML_TYPES):
                 return Page(url, final, resp.status_code, "", ctype, error=f"skipped content-type {ctype}")
             if final != url and urlsplit(final).netloc != urlsplit(url).netloc:
@@ -279,6 +293,7 @@ class Fetcher:
                 except FetchBlocked as exc:
                     return Page(url, final, resp.status_code, "", ctype, error=f"redirect refused: {exc}")
             html = resp.text
+            self._successful_hosts.add(host)
             page = Page(url, final, resp.status_code, html, ctype or "text/html")
             if self._should_render(page):
                 page = self._render(page) or page

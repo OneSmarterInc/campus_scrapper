@@ -20,7 +20,7 @@ from .extract import extract_page
 from .fetch import Fetcher, normalize_url
 from . import relevance
 from .models import OfficeRecord, Page, PersonRecord, PageResult
-from .profile import clean_fields
+from .profile import add_contacts, clean_fields
 from .vocab import (
     FOCUS_URL_HINTS, LINK_TEXT_HINTS, LISTING_URL_HINTS, OFFICE_URL_HINTS, PAGINATION_RE, PROFILE_URL_HINTS, SKIP_URL,
 )
@@ -32,6 +32,7 @@ def name_key(name: str) -> str:
     n = re.sub(r"^(?:(?:dr|prof|professor|doctor|mr|mrs|ms|miss|shri|sri|smt|kum|er)\.?\s+)+", "", (name or "").lower())
     n = re.sub(r"\((?:dr|prof|col|brig|maj|lt|gen)[^)]*\)\s*", "", n)
     n = re.sub(r"\b(?:brig|col|lt|maj|gen|capt)\.?\s+", "", n)
+    n = re.sub(r"\b(?:dr|prof|professor|mr|mrs|ms|miss)\b\.?", "", n)
     return re.sub(r"[^a-z]", "", n)
 
 
@@ -50,6 +51,7 @@ def _seen_key(url: str) -> str:
 
 def has_initials(name: str) -> bool:
     n = re.sub(r"^(?:(?:dr|prof|professor|doctor|mr|mrs|ms|miss|shri|sri|smt|kum|er)\.?\s+)+", "", (name or "").lower())
+    n = re.sub(r"\b(?:dr|prof|professor|mr|mrs|ms|miss)\b\.?", "", n)
     return any(len(re.sub(r"[^a-z]", "", w)) <= 2 for w in re.split(r"[\s.]+", n) if re.sub(r"[^a-z]", "", w))
 
 
@@ -74,6 +76,10 @@ class Merger:
         key_u = url_key(rec.profile_url)
         key_n = name_key(rec.get("name", ""))
         target = self._by_url.get(key_u) if key_u else None
+        if target is not None and (name_key(target.get("name", "")) != key_n or
+                                   (target.source_institution and rec.source_institution and
+                                    target.source_institution != rec.source_institution)):
+            target = None  # Shared/reassigned pages are not proof that two names identify one person.
         if target is None and key_n:
             loose = loose_key(rec.get("name", ""))
             exact = self._by_name.get(key_n, [])
@@ -88,9 +94,13 @@ class Merger:
                 # A link to the doctor's own off-site website is not a second profile on this site.
                 urls_ok = not u1 or not u2 or u1 == u2 or u1.split("/", 1)[0] != u2.split("/", 1)[0]
                 if is_exact:
-                    # Same full name on one site = same doctor, even on two pages of the site
-                    # (MOC '/our-team/x' and '/north-india/doctor/x'), when both cities are known and equal.
-                    ok = urls_ok or (len(key_n) >= 8 and c1 and c2 and c1 == c2)
+                    # Repeated full names on the same college site may use different profile URLs.
+                    # Preserve initials and conflicting campus/city identities.
+                    same_site_name = bool(cand.source_url and rec.source_url) and urlsplit(cand.source_url).hostname == urlsplit(rec.source_url).hostname
+                    email1, email2 = cand.get("email"), rec.get("email")
+                    shared_email = email1 and email2 and set(email1.split("; ")) & set(email2.split("; "))
+                    ok = urls_ok or bool(shared_email) or (same_site_name and len(key_n) >= 8 and
+                         not has_initials(rec.get("name", "")) and not (c1 and c2 and c1 != c2))
                 else:
                     # Only initials differ ('Ch. Mohana Vamsy' / 'Mohana Vamsy'): one side must have no initials,
                     # so 'K. Srinivas Rao' and 'P. Srinivas Rao' stay two doctors.
@@ -102,6 +112,13 @@ class Merger:
             self.records.append(rec)
             target = rec
         elif target is not rec:
+            # Keep every attributed contact when a verified person has both a directory
+            # address and a different address/number in their CV or profile.
+            base, other = (rec, target) if rec.page_type == "profile" and target.page_type != "profile" else (target, rec)
+            for field in ("email", "phone", "contact_email", "contact_phone"):
+                if other.get(field):
+                    add_contacts(base, field, str(other.get(field)).split("; "),
+                                 other.layers.get(field, "patterns"), "Same person's published contact", other.source_url)
             # A profile-page record should become the base.
             if rec.page_type == "profile" and target.page_type != "profile":
                 rec.absorb(target, fill_only=True)
@@ -181,6 +198,8 @@ class Crawler:
         self.merger = Merger()
         self.offices: list[OfficeRecord] = []
         self._focus_profile_urls: set[str] = set()
+        self._pdf_people: dict[str, PersonRecord | None] = {}
+        self._path_scopes: dict[str, str] = {}
         self.value_pages: dict[str, set[str]] = {}
         self.result_pages: list = []  # phone/email -> pages that show it
         self.blocked: list[str] = []
@@ -191,6 +210,8 @@ class Crawler:
         path = p.path + ("?" + p.query if p.query else "")
         if hint == "start":
             return 1000.0  # URLs given by the user are always fetched first, whatever their path
+        if p.path.lower().endswith(".pdf") and hint in ("profile", "focus_profile"):
+            return 210.0 - 4 * depth  # Only PDFs linked from an identified person's card/row.
         if SKIP_URL.search(path) or SKIP_URL.search(url):
             return None
         s = 10.0
@@ -198,6 +219,10 @@ class Crawler:
             s += 50
         if LISTING_URL_HINTS.search(path):
             s += 35
+        if re.search(r"facult(?:y|ies)(?:[-_/]?(?:new|list|members|profile))?/?$|/department[s]?/[^/]+/?$", p.path, re.I):
+            s += 250  # Discover all departments before spending the budget on individual profiles.
+        elif hint == "directory":
+            s += 180
         if FOCUS_URL_HINTS.search(path):
             s += 30
         if self.cfg.include_offices and OFFICE_URL_HINTS.search(path):
@@ -218,7 +243,14 @@ class Crawler:
         return s - 4 * depth
 
     def _push(self, url: str, depth: int, from_focus: bool = False, hint: str = "", start: str = "") -> None:
-        url = normalize_url(url)
+        try:
+            url = normalize_url(url)
+        except ValueError:
+            return
+        if urlsplit(url).path.lower().endswith(".pdf") and url not in self._pdf_people:
+            return
+        if not self._within_path_scope(url):
+            return
         if _seen_key(url) in self._queued or depth > self.cfg.max_depth:
             return
         if start and not same_site(url, start, self.cfg.include_subdomains):
@@ -235,10 +267,34 @@ class Crawler:
             pass
         heapq.heappush(self._frontier, (-score, next(self._seq), url, depth, from_focus))
 
+    def _within_path_scope(self, url: str) -> bool:
+        p = urlsplit(url)
+        prefix = self._path_scopes.get(p.netloc)
+        return not prefix or p.path == prefix.rstrip("/") or p.path.startswith(prefix) or url in self._pdf_people
+
+    def _set_path_scopes(self, starts: list[str]) -> None:
+        # Two or more supplied pages beneath one campus folder establish its scope.
+        # Generic site-wide faculty/department folders do not establish a campus boundary.
+        by_host: dict[str, list[str]] = {}
+        for u in starts:
+            p = urlsplit(u)
+            by_host.setdefault(p.netloc, []).append(p.path)
+        generic = re.compile(r"^(?:departments?|facult(?:y|ies)|academics?|people|staff|schools?|"
+                             r"profiles?|about|contact|en|in|index\.php)$", re.I)
+        for host, paths in by_host.items():
+            parts = {p.strip("/").split("/")[0] for p in paths}
+            if len(set(paths)) >= 2 and len(parts) == 1 and all(len(p.strip("/").split("/")) >= 2 for p in paths):
+                part = next(iter(parts))
+                if part and not generic.fullmatch(part):
+                    self._path_scopes[host] = "/" + part + "/"
+
     # -- sitemaps -----------------------------------------------------------
     def _sitemap_urls(self, start: str) -> list[str]:
         origin = f"{urlsplit(start).scheme}://{urlsplit(start).netloc}"
         robots = self.fetcher.robots_for(start)
+        if robots.crawl_delay >= 10:
+            self.progress({"event": "sitemap", "urls": 0, "note": "skipped sitemap prefetch: site requests slow pacing; following supplied pages and links"})
+            return []
         todo = list(dict.fromkeys(robots.sitemaps + [origin + "/sitemap.xml"]))
         found: list[str] = []
         fetched = 0
@@ -276,13 +332,17 @@ class Crawler:
     # -- main loop ------------------------------------------------------------
     def run(self, start_urls: list[str]) -> CrawlResult:
         starts = [normalize_url(u if re.match(r"https?://", u) else "https://" + u) for u in start_urls]
+        self._set_path_scopes(starts)
         result = CrawlResult(starts)
         self.result_pages = result.pages  # live page log, read by the UI for partial downloads
         t0 = time.time()
+        sitemap_origins = set()
         for s in starts:
             self._queued.discard(_seen_key(s))
             self._push(s, 0, hint="start")
-            if self.cfg.use_sitemaps:
+            origin = (urlsplit(s).scheme, urlsplit(s).netloc)
+            if self.cfg.use_sitemaps and origin not in sitemap_origins:
+                sitemap_origins.add(origin)
                 for u in self._sitemap_urls(s):
                     if same_site(u, s, self.cfg.include_subdomains):
                         path = urlsplit(u).path
@@ -321,32 +381,42 @@ class Crawler:
             result.pages.append(PageLog(page.final_url, page.status, pr.page_type, len(pr.doctors), depth, note))
             start = next((s for s in starts if same_site(page.final_url, s, self.cfg.include_subdomains)), starts[0])
             page_focus = bool(FOCUS_URL_HINTS.search(urlsplit(page.final_url).path)) or any(d.is_relevant for d in pr.doctors) or from_focus
-            before = (len(self.merger.records), len(self.offices))
+            before = (len(self.merger.records), len(self.offices),
+                      sum(len(r.filled_fields()) for r in self.merger.records))
             merge_offices(self.offices, pr.offices)
             for rec in pr.doctors:
                 merged = self.merger.add(rec)
                 if merged.is_relevant and merged.profile_url:
                     self._focus_profile_urls.add(normalize_url(merged.profile_url))
-            if (len(self.merger.records), len(self.offices)) != before:
+            after = (len(self.merger.records), len(self.offices),
+                     sum(len(r.filled_fields()) for r in self.merger.records))
+            if after != before:
                 state["last_new"] = fetched
             elif self.cfg.patience and fetched - state["last_new"] >= self.cfg.patience:
-                state["patience_stop"] = True  # many pages in a row with nobody new: the rest of the site is unlikely to help
+                state["patience_stop"] = True  # many pages in a row without new people, offices, or populated fields
             if pr.page_type != "error":
                 for d in pr.doctors:
                     if d.page_type == "listing" and d.profile_url:
+                        if urlsplit(d.profile_url).path.lower().endswith(".pdf"):
+                            key = normalize_url(d.profile_url)
+                            if key in self._pdf_people and (self._pdf_people[key] is None or
+                                    name_key(self._pdf_people[key].get("name", "")) != name_key(d.get("name", ""))):
+                                self._pdf_people[key] = None  # A shared brochure is not an individual CV.
+                            else:
+                                self._pdf_people[key] = PersonRecord.from_full_dict(d.to_full_dict())
                         self._push(d.profile_url, depth + 1, page_focus, "focus_profile" if d.is_relevant else "profile", start)
                 for u in pr.pagination_links:
                     self._push(u, depth, page_focus, "pagination", start)
                 for u in pr.profile_links:
                     self._push(u, depth + 1, page_focus, "profile", start)
-                if pr.page_type != "profile":
-                    for u in pr.links:
-                        path = urlsplit(u).path
-                        text = pr.link_texts.get(u, "")
-                        if (LISTING_URL_HINTS.search(path) or FOCUS_URL_HINTS.search(path) or PROFILE_URL_HINTS.search(path)
-                                or (self.cfg.include_offices and OFFICE_URL_HINTS.search(path + " " + text))
-                                or LINK_TEXT_HINTS.search(text) or depth == 0):
-                            self._push(u, depth + 1, page_focus or bool(FOCUS_URL_HINTS.search(text)), "", start)
+                for u in pr.links:
+                    path = urlsplit(u).path
+                    text = pr.link_texts.get(u, "")
+                    directory = bool(re.search(r"facult|department|\bdept\b|teaching staff", text, re.I))
+                    if (LISTING_URL_HINTS.search(path) or FOCUS_URL_HINTS.search(path) or directory or PROFILE_URL_HINTS.search(path)
+                            or (self.cfg.include_offices and OFFICE_URL_HINTS.search(path + " " + text))
+                            or (pr.page_type != "profile" and (LINK_TEXT_HINTS.search(text) or depth == 0))):
+                        self._push(u, depth + 1, page_focus or bool(FOCUS_URL_HINTS.search(text)), "directory" if directory else "", start)
             self.progress({"event": "page", "url": page.final_url, "type": pr.page_type, "status": page.status,
                            "doctors_on_page": len(pr.doctors), "fetched": fetched, "queued": len(self._frontier),
                            "doctors_total": len(self.merger.records),
@@ -369,7 +439,13 @@ class Crawler:
                 url, depth, from_focus = job
                 try:
                     page = self.fetcher.get(url)  # network and parsing happen outside the lock
-                    pr = extract_page(page)
+                    if not self._within_path_scope(page.final_url):
+                        page = Page(url, page.final_url, page.status, "", error="redirect outside supplied campus path")
+                    if page.content_type == "application/pdf":
+                        from .pdf_profiles import extract_faculty_pdf
+                        pr = extract_faculty_pdf(page, self._pdf_people.get(url))
+                    else:
+                        pr = extract_page(page)
                 except Exception as exc:  # one bad page must not stop the site
                     log.warning("page %s failed: %s", url, exc)
                     page = Page(url, url, 0, "", error=f"{type(exc).__name__}: {exc}")
@@ -404,13 +480,26 @@ class Crawler:
         relevance.set_targets(caller_targets)
         demote_sitewide(result.doctors, self.value_pages)
         demote_shared(result.doctors)
+        if self.stop_event.is_set():
+            stop_reason = "user_stopped"
+        elif not fetched and self.blocked:
+            stop_reason = "robots_blocked"
+        elif fetched >= self.cfg.max_pages:
+            stop_reason = "page_limit"
+        elif state["patience_stop"]:
+            stop_reason = "no_new_data"
+        else:
+            stop_reason = "queue_exhausted"
         result.stats = {
             "pages_fetched": fetched, "requests": self.fetcher.requests_made, "page_types": counts,
             "people_found": len(result.doctors), "faculty": len(result.faculty), "offices": len(result.offices),
             "profiles_fetched": sum(1 for d in result.doctors if d.page_type == "profile"),
             "seconds": round(time.time() - t0, 1), "stopped_early": self.stop_event.is_set(),
             "frontier_left": len(self._frontier), "blocked_by_robots": len(self.blocked),
+            "crawl_delays": {origin: max(self.cfg.delay_seconds, policy.crawl_delay)
+                             for origin, policy in self.fetcher._robots.items()},
             "stopped_no_new_people": state["patience_stop"],
+            "stop_reason": stop_reason,
         }
         self.progress({"event": "done", **result.stats})
         return result

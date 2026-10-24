@@ -183,7 +183,8 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
                 data = {"institution": src.institution, "urls": src.urls, "stats": {}, "doctors": [], "offices": [], "pages": [],
                         "error": f"{type(exc).__name__}: {exc}"}
             stopped = bool(data["stats"].get("stopped_early"))
-            all_failed = bool(data["pages"]) and all(p["page_type"] == "error" for p in data["pages"])
+            all_failed = (bool(data["pages"]) and all(p["page_type"] == "error" for p in data["pages"])) or (
+                not data["pages"] and bool(data["stats"].get("blocked_by_robots")))
             if not stopped and not data["error"] and not all_failed:  # a college cut short by Stop is crawled again next time
                 jpath.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             status = "error" if data["error"] else ("stopped" if stopped else ("failed" if all_failed else "done"))
@@ -202,7 +203,14 @@ def run_batch(sources: list[Source], out: str | Path, base: ScrapeConfig, per_si
         if not note and failed:
             note = _failure_note(failed, len(data["pages"]))
         if data["stats"].get("stopped_no_new_people"):
-            note = (note + "; " if note else "") + "stopped early: many pages in a row added nobody new"
+            note = (note + "; " if note else "") + "stopped early: many pages in a row added no new people or fields"
+        if not data["pages"] and data["stats"].get("blocked_by_robots"):
+            note = (note + "; " if note else "") + "no pages read: blocked by robots policy or unavailable robots.txt"
+        if data["stats"].get("stop_reason") == "page_limit":
+            note = (note + "; " if note else "") + "page limit reached; additional pages may remain"
+        slowest = max(data["stats"].get("crawl_delays", {}).values(), default=0)
+        if slowest >= 10:
+            note = (note + "; " if note else "") + f"site requires {slowest:g}s between requests"
         if src.warnings:
             note = (note + "; " if note else "") + "; ".join(src.warnings)
         site = {

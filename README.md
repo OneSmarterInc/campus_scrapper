@@ -107,6 +107,14 @@ One row per college. College Name and one URL are required.
 
 Faculty and student-office URLs give much better results than the home page alone. The crawler finds them from the home page, but that spends more of the page budget.
 
+### Pune test list and coverage checks
+
+`examples/pune-10-colleges.csv` uses the standard upload columns and supplies the official department directories used in the Pune audit. Upload it as a **new batch** after updating; Resume reuses completed colleges and will not refresh their results. PCCOE uses several department subdomains, so that row enables Include Subdomains. A single department URL does not guarantee whole-college coverage, especially when the site does not link its other directories.
+
+The crawler prioritises faculty directories, fetches each origin's sitemap once, and follows named faculty rows to PDF CVs. When multiple supplied pages share a specific campus folder (such as `/coepune/`), discovery stays in that folder instead of mixing other colleges on the university domain. Generic `/departments/` and `/faculty/` folders do not impose this boundary. New contact fields reset the no-progress counter as well as new people. Sites requesting at least ten seconds between requests skip bulk sitemap prefetch and start from the supplied pages and their links. The requested delay is respected and reported in the Colleges note. The Pune sample caps Dhole Patil at eight starting pages because its site asks for a sixty-second gap; raise that row's budget for deeper profile enrichment. PDF enrichment requires the linked person's name and an academic role in the first two pages; unlinked brochures and ambiguous shared PDFs are not treated as individual profiles. Install the updated requirements for PDF support. Scanned PDFs without a text layer are not OCRed.
+
+The Colleges sheet reports when the page limit was reached. A completed run means the configured crawl finished; it does not prove that every faculty member or every contact is published or discoverable. `stop_reason` distinguishes the page limit, an empty queue, no new data, and a user stop.
+
 ## Output (Excel)
 
 | Sheet | Contents |
@@ -137,7 +145,7 @@ Faculty and student-office URLs give much better results than the home page alon
 
 ## What it cannot read yet
 
-- Faculty lists published only as PDF.
+- Standalone faculty rosters published only as PDF, and scanned PDFs without selectable text. Named PDF CVs linked from faculty cards are supported.
 - Pages behind a login (ERP portals, student portals).
 - Sites that block automated access even in a real browser.
 
@@ -159,6 +167,6 @@ campusscraper/
   web.py        local web UI and portal (static/)
   fetch.py, render.py, robots.py, dom.py, annotate.py, structured.py, emails.py, phones.py, contacts.py
                 shared crawler code from OncoScraper
-tests_campus/   fictional college site and 15 tests
+tests_campus/   fictional college site, portal tests, and extraction/crawl regressions
 campus_sources/ india_colleges_seed.xlsx (62 colleges), college_list_template.xlsx
 ```
