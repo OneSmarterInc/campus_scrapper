@@ -1,0 +1,356 @@
+"""Small HTTP adapters and durable checkpoints for prompt discovery.
+
+No provider SDK, model download, paid search tool, or key in browser storage.
+Successful steps are replayable after restart without repeating network work.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import sqlite3
+import threading
+import time
+from dataclasses import asdict
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+
+import httpx
+
+from .models import Page
+from .fetch import _ssl_verify
+
+REVISION = 1
+
+
+class ServiceWait(Exception):
+    def __init__(self, message, retry_at=None):
+        super().__init__(message)
+        self.retry_at = retry_at or time.time() + 60
+
+
+class ConfigurationError(Exception):
+    pass
+
+
+class IncompleteSearch(ServiceWait):
+    """A search returned no URLs with some engines down; other queries may work."""
+
+
+class Paused(Exception):
+    pass
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+class DiscoveryDB:
+    """One bounded-work SQLite journal. Keys are never written to it."""
+    def __init__(self, path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.RLock()
+        self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, data TEXT);
+            CREATE TABLE IF NOT EXISTS steps(job TEXT, key TEXT, data TEXT, PRIMARY KEY(job,key));
+            CREATE TABLE IF NOT EXISTS cooldowns(provider TEXT PRIMARY KEY, until REAL);
+            CREATE TABLE IF NOT EXISTS usage(id INTEGER PRIMARY KEY, job TEXT, provider TEXT, at REAL, tokens INTEGER);
+            CREATE INDEX IF NOT EXISTS usage_time ON usage(provider,at);
+        """)
+        self.db.execute("DELETE FROM usage WHERE at < ?", (time.time() - 2 * 86400,))
+        self.db.commit()
+
+    def save(self, data):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO jobs VALUES (?,?)", (data["id"], json.dumps(data, ensure_ascii=False)))
+            self.db.commit()
+
+    def get(self, job):
+        with self.lock:
+            row = self.db.execute("SELECT data FROM jobs WHERE id=?", (job,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def jobs(self):
+        with self.lock:
+            rows = self.db.execute("SELECT data FROM jobs ORDER BY rowid DESC LIMIT 200").fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def cached(self, job, key):
+        with self.lock:
+            row = self.db.execute("SELECT data FROM steps WHERE job=? AND key=?", (job, key)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def cache(self, job, key, data):
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO steps VALUES (?,?,?)", (job, key, json.dumps(data, ensure_ascii=False)))
+            self.db.commit()
+
+    def delete(self, job):
+        with self.lock:
+            self.db.execute("DELETE FROM steps WHERE job=?", (job,))
+            # Deleting a run must not reset this installation's daily budget.
+            self.db.execute("UPDATE usage SET job='' WHERE job=?", (job,))
+            self.db.execute("DELETE FROM jobs WHERE id=?", (job,))
+            self.db.commit()
+
+    def cooldown(self, provider, until=None):
+        with self.lock:
+            if until is not None:
+                self.db.execute("INSERT OR REPLACE INTO cooldowns VALUES (?,?)", (provider, until))
+                self.db.commit()
+            row = self.db.execute("SELECT until FROM cooldowns WHERE provider=?", (provider,)).fetchone()
+        return row[0] if row else 0
+
+    def reserve(self, job, provider, tokens, rpm, tpm, rpd, tpd):
+        """Conservative rolling budgets shared by runs in this installation.
+
+        The provider remains authoritative for other users/apps in the account.
+        Failed requests retain their reservation; retries cannot spin for free.
+        """
+        now = time.time()
+        with self.lock:
+            if min(rpm, tpm, rpd, tpd) < 1:
+                raise ConfigurationError(f"{provider}: scheduling budgets must be positive integers")
+            if tokens > tpm:
+                raise ConfigurationError(f"{provider}: this request exceeds the configured per-minute token budget")
+            if tokens > tpd:
+                raise ConfigurationError(f"{provider}: this request exceeds the configured daily token budget")
+            until = self.cooldown(provider)
+            if until > now:
+                raise ServiceWait(f"{provider}: waiting for API capacity", until)
+            rows = self.db.execute("SELECT at,tokens FROM usage WHERE provider=? AND at>? ORDER BY at",
+                                   (provider, now - 86400)).fetchall()
+            recent = [r for r in rows if r[0] > now - 60]
+            if len(rows) >= rpd or sum(r[1] for r in rows) + tokens > tpd:
+                raise ServiceWait(f"{provider}: local daily budget reached", (rows[0][0] + 86401) if rows else now + 86400)
+            if len(recent) >= rpm or sum(r[1] for r in recent) + tokens > tpm:
+                raise ServiceWait(f"{provider}: pacing requests within the token limit", recent[0][0] + 61)
+            cursor = self.db.execute("INSERT INTO usage(job,provider,at,tokens) VALUES (?,?,?,?)", (job, provider, now, tokens))
+            self.db.commit()
+            return cursor.lastrowid
+
+    def actual_usage(self, reservation, tokens):
+        if isinstance(tokens, int) and tokens >= 0:
+            with self.lock:
+                self.db.execute("UPDATE usage SET tokens=? WHERE id=?", (tokens, reservation))
+                self.db.commit()
+
+    def stats(self, job):
+        with self.lock:
+            rows = self.db.execute("SELECT provider,COUNT(*),SUM(tokens) FROM usage WHERE job=? GROUP BY provider", (job,)).fetchall()
+        return [{"provider": r[0], "requests": r[1], "tokens": r[2]} for r in rows]
+
+
+def json_schema(schema):
+    """Provider subset; stricter length/value constraints are also checked locally."""
+    def clean(node):
+        if isinstance(node, list):
+            return [clean(n) for n in node]
+        if not isinstance(node, dict):
+            return node
+        out = {k: clean(v) for k, v in node.items() if k not in
+               {"title", "default", "minLength", "maxLength", "minItems", "maxItems", "minimum", "maximum"}}
+        if out.get("type") == "object":
+            out["required"] = list(out.get("properties", {}))
+            out["additionalProperties"] = False
+        return out
+    return clean(schema.model_json_schema())
+
+
+def retry_time(response):
+    """Both HTTP dates and provider RetryInfo durations, without storing bodies."""
+    raw = response.headers.get("retry-after", "")
+    seconds = 60.0
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            seconds = parsedate_to_datetime(raw).timestamp() - time.time()
+        except (ValueError, TypeError, OverflowError):
+            try:
+                for item in response.json().get("error", {}).get("details", []):
+                    if "retryDelay" in item:
+                        seconds = float(item["retryDelay"].rstrip("s"))
+            except (ValueError, TypeError, AttributeError):
+                pass
+    return time.time() + max(5, min(seconds if math.isfinite(seconds) else 60, 86400))
+
+
+def settings():
+    # Server environment only. Never serialize API keys in API responses or jobs.
+    from dotenv import load_dotenv
+    load_dotenv(Path.cwd() / ".env", override=False)
+    search_url = os.getenv("SEARXNG_URL", "http://127.0.0.1:8080").rstrip("/")
+    from urllib.parse import urlsplit
+    parsed = urlsplit(search_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ConfigurationError("SEARXNG_URL must be an HTTP(S) service URL without credentials or query parameters")
+    return {
+        "search_url": search_url,
+        "groq_model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
+    }
+
+
+class ModelRouter:
+    def __init__(self, db, job, control=lambda: None, client=None):
+        self.db, self.job, self.control = db, job, control
+        self.client = client or httpx.Client(timeout=90, follow_redirects=False, trust_env=False, verify=_ssl_verify())
+        self.owns_client = client is None
+        self.config = settings()
+
+    def close(self):
+        if self.owns_client:
+            self.client.close()
+
+    def ask(self, schema, instruction, payload):
+        self.control()
+        key = "model:" + digest([REVISION, self.config["groq_model"], self.config["gemini_model"],
+                                  schema.model_json_schema(), instruction, payload])
+        cached = self.db.cached(self.job, key)
+        if cached is not None:
+            return schema.model_validate_json(json.dumps(cached))
+        providers = [p for p in ("groq", "gemini") if self.config[p + "_configured"]]
+        if not providers:
+            raise ConfigurationError("Set GROQ_API_KEY (or GEMINI_API_KEY) in the server environment, then restart the portal")
+        waits, errors = [], []
+        for provider in providers:
+            self.control()
+            try:
+                result = self._ask(provider, schema, instruction, payload)
+                self.db.cache(self.job, key, result.model_dump())
+                return result
+            except ServiceWait as exc:
+                waits.append(exc)
+            except ConfigurationError as exc:
+                errors.append(str(exc))
+        if waits:
+            raise ServiceWait("; ".join([str(w) for w in waits] + errors), min(w.retry_at for w in waits))
+        raise ConfigurationError("; ".join(errors))
+
+    def _ask(self, provider, schema, instruction, payload):
+        model = self.config[provider + "_model"]
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+", model) or ".." in model:
+            raise ConfigurationError(f"Invalid {provider} model name")
+        shape = json_schema(schema)
+        content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        # A conservative scheduling estimate, not a tokenizer or a billing claim.
+        estimate = math.ceil(len((instruction + content + json.dumps(shape)).encode()) / 3) + 2000
+        limits = (30, 8000, 1000, 200000) if provider == "groq" else (5, 20000, 100, 200000)
+        limits = tuple(int(os.getenv(f"{provider.upper()}_{name}", default)) for name, default in zip(("RPM", "TPM", "RPD", "TPD"), limits))
+        reservation = self.db.reserve(self.job, provider, estimate, *limits)
+        if provider == "groq":
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {"Authorization": "Bearer " + os.environ["GROQ_API_KEY"]}
+            body = {"model": model, "temperature": 0, "max_completion_tokens": 2000,
+                    "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": content}],
+                    "response_format": {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": shape}}}
+            if model.startswith("openai/gpt-oss"):
+                body["reasoning_effort"] = "low"
+        else:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"]}
+            body = {"systemInstruction": {"parts": [{"text": instruction}]},
+                    "contents": [{"role": "user", "parts": [{"text": content}]}],
+                    "generationConfig": {"temperature": 0, "maxOutputTokens": 2000,
+                                         "responseMimeType": "application/json", "responseJsonSchema": shape}}
+            if model.startswith("gemini-2.5-flash"):
+                body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
+        try:
+            response = self.client.post(url, headers=headers, json=body)
+        except httpx.HTTPError:
+            self.db.cooldown(provider, time.time() + 60)
+            raise ServiceWait(f"{provider}: connection unavailable; progress is saved") from None
+        if response.status_code == 429 or response.status_code >= 500:
+            until = retry_time(response)
+            self.db.cooldown(provider, until)
+            raise ServiceWait(f"{provider}: quota or service temporarily unavailable (HTTP {response.status_code})", until)
+        if response.status_code != 200:
+            # Provider bodies/exceptions can echo credentials or request content.
+            raise ConfigurationError(f"{provider}: HTTP {response.status_code}; check API key, model access and free-tier settings")
+        try:
+            data = response.json()
+            if provider == "groq":
+                self.db.actual_usage(reservation, data.get("usage", {}).get("total_tokens"))
+                choice = data["choices"][0]
+                if choice.get("finish_reason") != "stop":
+                    raise ValueError("incomplete response")
+                text = choice["message"]["content"]
+            else:
+                self.db.actual_usage(reservation, data.get("usageMetadata", {}).get("totalTokenCount"))
+                choice = data["candidates"][0]
+                if choice.get("finishReason") != "STOP":
+                    raise ValueError("incomplete response")
+                text = "".join(p.get("text", "") for p in choice["content"]["parts"] if not p.get("thought"))
+            return schema.model_validate_json(text)
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise ConfigurationError(f"{provider}: incomplete or invalid structured response; no URLs or contacts were guessed") from None
+
+
+class CachedSearch:
+    def __init__(self, db, job, base_url, control=lambda: None, client=None):
+        self.db, self.job, self.base_url, self.control = db, job, base_url.rstrip("/"), control
+        self.client = client or httpx.Client(timeout=35, follow_redirects=False, trust_env=False, verify=_ssl_verify())
+        self.owns_client = client is None
+        self.warnings = []
+
+    def close(self):
+        if self.owns_client:
+            self.client.close()
+
+    def search(self, query):
+        self.control()
+        key = "search:" + digest([self.base_url, query])
+        cached = self.db.cached(self.job, key)
+        if cached is not None:
+            self.warnings.extend(cached["warnings"])
+            return cached["urls"]
+        try:
+            response = self.client.get(self.base_url + "/search", params={"q": query, "format": "json", "categories": "general"})
+            if response.status_code in (401, 403):
+                raise ConfigurationError("SearXNG refused JSON search. Enable search.formats: [html, json] in its settings.yml")
+            if response.status_code == 429 or response.status_code >= 500:
+                raise ServiceWait("SearXNG temporarily unavailable; progress is saved", retry_time(response))
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data.get("results"), list):
+                raise ValueError("missing results")
+        except httpx.HTTPError:
+            raise ServiceWait("Cannot reach SearXNG. Start the search service; progress is saved") from None
+        except (ValueError, AttributeError):
+            raise ConfigurationError("SearXNG did not return JSON search results. Check its URL and JSON format setting") from None
+        urls = [r["url"] for r in data["results"][:20] if isinstance(r, dict) and isinstance(r.get("url"), str)]
+        warnings = []
+        if data.get("unresponsive_engines"):
+            if not urls:
+                raise IncompleteSearch("Search engines returned no usable results while some were unavailable; retry later")
+            warnings = ["Some search engines were unavailable; usable results from other engines were retained"]
+            self.warnings.extend(warnings)
+        self.db.cache(self.job, key, {"urls": urls, "warnings": warnings})
+        return urls
+
+
+class CachedFetcher:
+    def __init__(self, fetcher, db, job, control=lambda: None):
+        self.inner, self.cfg, self.db, self.job, self.control = fetcher, fetcher.cfg, db, job, control
+
+    def get(self, url):
+        self.control()
+        key = "page:" + digest(url)
+        value = self.db.cached(self.job, key)
+        if value is not None:
+            return Page(**value)
+        page = self.inner.get(url)
+        if not page.error and page.status == 200:
+            self.db.cache(self.job, key, asdict(page))
+        return page
+
+    def close(self):
+        self.inner.close()

@@ -8,3 +8,8 @@ html_dump/
 .pytest_cache/
 tests_campus/site/
 *_sites/
+.env
+.env.*
+!.env.example
+searxng/settings.yml
+searxng/data/

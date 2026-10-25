@@ -7,6 +7,15 @@ Give it a college website (home page, faculty page, department page, or one facu
 
 Student offices are how you reach students. Pages that name individual students (student coordinators, club office-bearers, "III Year CSE", roll numbers) are read, but those students' names, phones and emails are left out of every output. The **Student Lines Left Out** column counts them, so you can see when a page had more.
 
+**New: prompt to contacts.** Under **New run**, describe the colleges or faculty
+you need. Optional Groq + SearXNG discovery finds official source pages, the
+existing crawler extracts contacts, and prompt-specific filters run before export.
+Gemini can provide fallback capacity. Saved jobs pause/resume across quota
+interruptions. This optional feature needs free-tier API credentials and a
+SearXNG service; ordinary URL/Excel crawling still needs no model key.
+See [the complete setup commands](docs/prompt-setup.md) and
+[the validation results and remaining live checks](docs/prompt-validation.md).
+
 CampusScraper uses the same crawler engine as OncoScraper (`OneSmarterInc/oncology-swarm`, branch `onco-scraper`).
 
 ## Setup on Windows (one time)
@@ -25,7 +34,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest -q tests_campus
 ```
 
-Expect `15 passed`. Then try the fictional demo college. Window 1:
+All tests should pass. Then try the fictional demo college. Window 1:
 
 ```powershell
 .\.venv\Scripts\python.exe tests_campus\demo_site.py
@@ -54,12 +63,14 @@ Open http://127.0.0.1:8001/. Port 8001 lets it run next to the OncoScraper UI on
 | Page | What it shows |
 |---|---|
 | Dashboard | Faculty, colleges, departments, contact and Scholar/ORCID coverage, student offices (placement and higher-studies cells) across all runs; a per-college table (click a college to open it in the directory, or its office count to open its offices); recent runs. |
-| New run | Upload a college list (batch) or crawl one website; progress, pause/resume/stop, downloads. |
+| New run | Describe colleges/faculty in a prompt, upload a college list (batch), or crawl one website; progress, pause/resume/stop, downloads. |
 | Runs | Every past run with status, faculty and offices saved. Download its Excel, Run again (one website), Resume (a batch cut off when the app closed: finished colleges are not crawled again), Delete. |
 | Faculty directory | Everyone found so far, each person once (newest copy). Search; filter by college, department, city, has own email / phone / any contact, has Scholar/ORCID/Scopus; include non-teaching staff. Export Excel or CSV of the filtered list. |
 | Student offices | Placement, higher-studies, student-chapter, alumni and international offices across all runs. Filter by college, office type, has email / phone, publishes higher-studies figures. Export Excel or CSV. |
 
-History is saved in `results\campusscraper.db` (one SQLite file). Copy that file to back it up; delete it to start fresh.
+History is saved in `results\campusscraper.db`; prompt jobs and their saved steps
+use `results\prompt-discovery.db`. Stop the app and back up the whole `results`
+folder, including SQLite WAL/SHM files and crawl caches, to preserve resumable work.
 
 URLs you give (in the start box or the college list) are always fetched first, so a placement or higher-studies page in your list is read even when the page budget is small.
 

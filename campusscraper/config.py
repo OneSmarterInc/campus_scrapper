@@ -31,6 +31,7 @@ class ScrapeConfig:
     user_agent: str = DEFAULT_USER_AGENT
     # Local/private addresses are refused unless explicitly allowed (tests, intranet sites).
     allow_private_hosts: bool = field(default_factory=lambda: os.getenv("CAMPUSSCRAPER_ALLOW_PRIVATE") == "1")
+    strict_public_network: bool = False  # automatic prompt discovery checks DNS and every redirect
     save_html_dir: str | None = None   # write every fetched page here for debugging
     extra_profile_patterns: list[str] = field(default_factory=list)  # e.g. ["/consultant/"]
 

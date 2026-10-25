@@ -30,6 +30,8 @@ EXTRACTION_REVISION = 2
 
 def _cache_key(src, base, per_site_pages):
     settings = {**base.__dict__, "max_pages": src.max_pages or per_site_pages}
+    if not settings.get("strict_public_network"):
+        settings.pop("strict_public_network", None)  # retain ordinary pre-discovery resume fingerprints
     payload = {"revision": EXTRACTION_REVISION, "source": src.as_dict(), "settings": settings}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 

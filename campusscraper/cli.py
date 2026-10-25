@@ -109,6 +109,16 @@ def main(argv=None) -> int:
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument("--host", default="127.0.0.1")
 
+    pd = sub.add_parser("discover", help="find official college sources from a natural-language prompt and scrape them")
+    pd.add_argument("prompt", nargs="?", help="describe the faculty or campus offices you need")
+    pd.add_argument("--resume", metavar="RUN_ID", help="resume saved prompt discovery/extraction")
+    pd.add_argument("--sources-only", action="store_true")
+    pd.add_argument("--max-colleges", type=int, default=10)
+    pd.add_argument("--discovery-pages", type=int, default=60)
+    pd.add_argument("--searches", type=int, default=12)
+    pd.add_argument("--pages-per-college", type=int, default=200)
+    pd.add_argument("--render", choices=["never", "auto", "always"], default="auto")
+
     a = p.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):  # Windows consoles choke on ₹, – and similar
         try:
@@ -116,6 +126,60 @@ def main(argv=None) -> int:
         except (AttributeError, ValueError):
             pass
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+
+    if a.cmd == "discover":
+        import os
+        from .discovery_services import ConfigurationError, DiscoveryDB
+        from .prompt_jobs import PromptIn, PromptManager, export_sources
+        from .store import Store
+        folder = Path.cwd() / "results"
+        history = Store(os.getenv("CAMPUSSCRAPER_DB") or folder / "campusscraper.db")
+        db = DiscoveryDB(history.path.with_name("prompt-discovery.db"))
+        manager = PromptManager(db, history, folder)
+        try:
+            if a.resume:
+                job = db.get(a.resume)
+                if not job:
+                    print("Saved prompt run not found")
+                    return 2
+                if job["state"] in {"done", "partial", "sources_ready", "clarify", "unsupported", "no_candidates"}:
+                    print("This run has ended. Start a new prompt to change its scope or limits.")
+                    return 2
+            else:
+                if not a.prompt:
+                    print("Provide a prompt or --resume RUN_ID")
+                    return 2
+                job = manager.create(PromptIn(prompt=a.prompt, auto_scrape=not a.sources_only,
+                    max_colleges=a.max_colleges, discovery_pages=a.discovery_pages, searches=a.searches,
+                    pages_per_college=a.pages_per_college, render=a.render), start=False)
+            print("Saved run:", job["id"], flush=True)
+            manager.execute(job["id"])
+            job = db.get(job["id"])
+            print("State:", job["state"])
+            if job.get("error"):
+                print(job["error"])
+            for issue in job.get("report", {}).get("issues", []):
+                print("Note:", issue)
+            for question in job.get("report", {}).get("plan", {}).get("questions", []):
+                print("Clarify:", question)
+            if job.get("xlsx"):
+                print("Contacts:", Path(job["xlsx"]).resolve())
+            if job.get("report", {}).get("candidates"):
+                print("Sources:", export_sources(job, folder / f"prompt-{job['id']}-sources.xlsx").resolve())
+            if job["state"] == "waiting":
+                print(f"Resume after the service/quota recovers: python -m campusscraper discover --resume {job['id']}")
+                print("The web portal retries saved waiting jobs automatically while its server is running.")
+                return 75
+            return 0 if job["state"] in {"done", "partial", "sources_ready"} else 2
+        except (ConfigurationError, ValueError) as exc:
+            print(str(exc))
+            return 2
+        except KeyboardInterrupt:
+            manager.stop.set()
+            print("Interrupted. Resume the saved run using its ID.")
+            return 130
+        finally:
+            manager.close()
 
     if a.cmd == "scrape":
         cfg = _config(a)

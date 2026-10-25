@@ -107,6 +107,7 @@ class Fetcher:
             },
             max_redirects=5,
             verify=_ssl_verify(),
+            event_hooks={"request": [self._guard_request]} if config.strict_public_network else None,
         )
         self._robots: dict[str, RobotsPolicy] = {}
         self.robots_status: dict[str, str] = {}
@@ -121,6 +122,11 @@ class Fetcher:
         self._dead_hosts: set[str] = set()     # hostnames DNS cannot resolve; each fails once, then instantly
         self._successful_hosts: set[str] = set()
         self.requests_made = 0
+
+    def _guard_request(self, request):
+        if not self.cfg.allow_private_hosts:
+            from .network_guard import public_destination
+            public_destination(request.url)
 
     def close(self) -> None:
         self.client.close()
@@ -176,6 +182,11 @@ class Fetcher:
         except httpx.HTTPError as exc:
             log.warning("robots.txt unavailable to plain HTTP for %s: %s", origin, exc)
             self.robots_status[origin] = f"unreachable to plain HTTP ({type(exc).__name__}), no rules"
+            if self.cfg.strict_public_network:
+                policy = RobotsPolicy("User-agent: *\nDisallow: /", self.cfg.user_agent)
+                self.robots_status[origin] = "unavailable or refused; automatic discovery treats this site as closed"
+                self._robots[origin] = policy
+                return policy
             if _is_dns_failure(str(exc)) and urlsplit(origin).netloc not in self._successful_hosts:
                 self._dead_hosts.add(urlsplit(origin).netloc)
                 self.robots_status[origin] = "hostname does not exist (DNS lookup failed)"
@@ -268,6 +279,8 @@ class Fetcher:
                 continue
             final = normalize_url(str(resp.url))
             ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            if self.cfg.strict_public_network and len(resp.content) > self.cfg.max_bytes:
+                return Page(url, final, resp.status_code, "", ctype, error="Page exceeds response size limit; coverage is incomplete")
             if resp.status_code in BLOCK_CODES or (400 <= resp.status_code < 500 and resp.status_code not in (404, 410)):
                 # Firewall refuses non-browser clients (common on large hospital sites).
                 return self._via_browser(url, final, resp.status_code, ctype)

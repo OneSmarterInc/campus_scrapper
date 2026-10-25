@@ -7,7 +7,7 @@ function fmtDur(a, b) {
   if (!a) return ''; const s = Math.max(0, Math.round(((b || Date.now() / 1000) - a)));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
 }
-const STATE_CLASS = { done: 'ok', running: 'ok', paused: 'warn', stopping: 'warn', interrupted: 'warn', stopped: 'warn', failed: 'bad' };
+const STATE_CLASS = { done: 'ok', running: 'ok', paused: 'warn', pausing: 'warn', waiting: 'warn', partial: 'warn', clarify: 'warn', stopping: 'warn', interrupted: 'warn', stopped: 'warn', failed: 'bad' };
 function stateCell(s) { return `<span class="${STATE_CLASS[s] || ''}"><b>${esc(s)}</b></span>`; }
 
 function show(view) {
@@ -57,14 +57,15 @@ async function loadRuns() {
   const r = await api('/api/runs');
   if (!r.ok) { say($('r-msg'), r.error, 'bad'); return; }
   $('r-rows').innerHTML = r.data.runs.map(x => {
-    const live = x.state === 'running' || x.state === 'paused' || x.state === 'stopping';
+    const live = ['queued','running','paused','pausing','waiting','stopping'].includes(x.state);
     const acts = [];
-    if (live) acts.push(`<button data-act="open" data-id="${x.id}" data-kind="${x.kind}">Open</button>`);
+    if (live || x.kind === 'prompt') acts.push(`<button data-act="open" data-id="${x.id}" data-kind="${x.kind}">Open</button>`);
     acts.push(`<button class="secondary" data-act="dl" data-id="${x.id}">Excel</button>`);
     if (!live && x.kind === 'batch' && x.has_upload && x.state !== 'done') acts.push(`<button data-act="resume" data-id="${x.id}">Resume</button>`);
+    if (x.kind === 'prompt' && ['paused','stopped','interrupted','failed'].includes(x.state)) acts.push(`<button data-act="resume" data-id="${x.id}" data-kind="prompt">Resume</button>`);
     if (!live && x.kind === 'crawl') acts.push(`<button class="secondary" data-act="rerun" data-id="${x.id}">Run again</button>`);
     if (!live) acts.push(`<button class="secondary" data-act="del" data-id="${x.id}">${armed.has(x.id) ? 'Click again to delete' : 'Delete'}</button>`);
-    return `<tr><td>${fmtTime(x.started)}</td><td>${x.kind === 'batch' ? 'College list' : 'One website'}</td><td>${esc(x.title)}</td>
+    return `<tr><td>${fmtTime(x.started)}</td><td>${x.kind === 'prompt' ? 'Prompt' : x.kind === 'batch' ? 'College list' : 'One website'}</td><td>${esc(x.title)}</td>
       <td>${stateCell(x.state)}${x.error ? `<div class="muted">${esc(x.error)}</div>` : ''}</td><td>${fmtDur(x.started, live ? null : x.finished)}</td>
       <td>${x.faculty_saved}</td><td>${x.offices_saved}</td><td class="actions">${acts.join('')}</td></tr>`;
   }).join('') || `<tr><td colspan="8" class="empty">No runs yet. Start one under <a href="#new">New run</a>.</td></tr>`;
@@ -72,7 +73,7 @@ async function loadRuns() {
 $('r-rows').onclick = async e => {
   const b = e.target.closest('button[data-act]'); if (!b) return;
   const id = b.dataset.id, act = b.dataset.act;
-  if (act === 'open') { location.hash = '#new'; b.dataset.kind === 'batch' ? attachBatch(id) : attachJob(id); return; }
+  if (act === 'open') { location.hash = '#new'; if (b.dataset.kind === 'prompt') { attachPrompt(id); $('prompt-card').scrollIntoView(); } else b.dataset.kind === 'batch' ? attachBatch(id) : attachJob(id); return; }
   if (act === 'dl') { download(`/api/runs/${id}/download.xlsx`, $('r-msg'), b); return; }
   if (act === 'del') {
     if (!armed.has(id)) { armed.add(id); b.textContent = 'Click again to delete'; setTimeout(() => armed.delete(id), 5000); return; }
@@ -84,6 +85,7 @@ $('r-rows').onclick = async e => {
   b.disabled = false;
   if (!r.ok) { say($('r-msg'), r.error, 'bad'); return; }
   location.hash = '#new';
+  if (r.data.kind === 'prompt') { attachPrompt(r.data.id); return; }
   if (act === 'resume') { say($('b-msg'), `Resumed: finished colleges are kept, ${r.data.colleges} in the list.`, 'ok'); attachBatch(r.data.id); }
   else { showRows([], 'this website crawl', []); attachJob(r.data.id); }
 };

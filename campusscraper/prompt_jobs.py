@@ -1,0 +1,324 @@
+"""Durable prompt → discovery → existing crawler → filtered Excel workflow."""
+from __future__ import annotations
+
+import json
+import threading
+import time
+import uuid
+from dataclasses import asdict
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .batch import run_batch
+from .config import ScrapeConfig
+from .crawl import CrawlResult, PageLog
+from .discovery_services import (
+    CachedFetcher, CachedSearch, ConfigurationError, DiscoveryDB, ModelRouter, Paused, ServiceWait, settings,
+)
+from .export import to_xlsx
+from .fetch import Fetcher
+from .models import OfficeRecord, PersonRecord
+from .prompt_discovery import Limits, Report
+from .verified_discovery import discover_verified, filter_records, sources_from_report
+
+ACTIVE = {"queued", "running", "waiting", "pausing", "stopping"}
+TERMINAL = {"done", "partial", "clarify", "unsupported", "no_candidates", "sources_ready"}
+
+
+class PromptIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str = Field(min_length=1, max_length=6000)
+    max_colleges: int = Field(10, ge=1, le=100)
+    discovery_pages: int = Field(60, ge=1, le=100)
+    searches: int = Field(12, ge=1, le=30)
+    pages_per_college: int = Field(200, ge=1, le=1000)
+    render: Literal["never", "auto", "always"] = "auto"
+    auto_scrape: bool = True
+
+    @field_validator("prompt")
+    @classmethod
+    def nonempty(cls, value):
+        if not value.strip():
+            raise ValueError("Describe the faculty, colleges or offices you need")
+        return value.strip()
+
+
+class PromptManager:
+    def __init__(self, db, history, out_dir):
+        self.db, self.history, self.out_dir = db, history, Path(out_dir)
+        self.lock = threading.RLock()
+        self.wake = threading.Event()
+        self.closed = threading.Event()
+        self.thread = None
+        self.current = None
+        self.stop = threading.Event()
+        # A new process cannot still own an in-flight HTTP/browser operation.
+        for job in self.db.jobs():
+            if job["state"] in {"running", "pausing", "stopping"}:
+                job["state"] = "interrupted"
+                self.db.save(job)
+                self.history.update_run(job["id"], state="interrupted")
+
+    def start_worker(self):
+        with self.lock:
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._loop, daemon=True, name="prompt-discovery")
+                self.thread.start()
+        self.wake.set()
+
+    def close(self):
+        self.closed.set()
+        self.stop.set()
+        self.wake.set()
+
+    def create(self, body, start=True):
+        config = settings()
+        if not (config["groq_configured"] or config["gemini_configured"]):
+            raise ConfigurationError("Add GROQ_API_KEY to the server environment and restart. GEMINI_API_KEY is an optional fallback")
+        job = {"id": uuid.uuid4().hex[:10], "state": "queued", "phase": "queued", "started": time.time(),
+               "finished": None, "body": body.model_dump(), "report": {}, "rows": [], "progress": {},
+               "error": None, "retry_at": None, "xlsx": None, "stats": {}}
+        self.history.create_run(job["id"], "prompt", body.prompt[:120], body.model_dump())
+        self.history.update_run(job["id"], state="queued")
+        self.db.save(job)
+        if start:
+            self.start_worker()
+        return job
+
+    def update(self, job_id, **values):
+        with self.lock:
+            job = self.db.get(job_id)
+            if job is None:
+                return
+            job.update(values)
+            self.db.save(job)
+            hist = {k: values[k] for k in ("state", "finished", "error", "xlsx", "stats") if k in values}
+            if hist:
+                self.history.update_run(job_id, **hist)
+
+    def action(self, job_id, action):
+        with self.lock:
+            job = self.db.get(job_id)
+            if not job:
+                raise KeyError("Prompt run not found")
+            state = job["state"]
+            if action in {"pause", "stop"}:
+                if state not in ACTIVE:
+                    raise ValueError(f"Cannot {action} a run that is {state}")
+                active = self.current == job_id
+                next_state = ("pausing" if action == "pause" else "stopping") if active else ("paused" if action == "pause" else "stopped")
+                self.update(job_id, state=next_state, retry_at=None)
+                if active:
+                    self.stop.set()
+            elif action == "resume":
+                if state not in {"paused", "stopped", "interrupted", "waiting", "failed"}:
+                    raise ValueError(f"Cannot resume a run that is {state}")
+                self.update(job_id, state="queued", error=None, retry_at=None, finished=None)
+                self.start_worker()
+            else:
+                raise ValueError("Unknown action")
+        self.wake.set()
+        return self.db.get(job_id)
+
+    def _loop(self):
+        while not self.closed.is_set():
+            with self.lock:
+                pending = [j for j in reversed(self.db.jobs()) if j["state"] == "queued" or
+                           (j["state"] == "waiting" and (j.get("retry_at") or 0) <= time.time())]
+                job = pending[0] if pending else None
+                if job:
+                    self.current = job["id"]
+                    self.stop = threading.Event()
+                    self.update(job["id"], state="running", error=None, retry_at=None)
+            if job:
+                self.execute(job["id"])
+                with self.lock:
+                    self.current = None
+            else:
+                self.wake.wait(2)
+                self.wake.clear()
+
+    def execute(self, job_id):
+        """Public for deterministic integration tests; production uses one worker."""
+        job = self.db.get(job_id)
+        body = PromptIn(**job["body"])
+        model = search = fetcher = None
+
+        def control():
+            if self.closed.is_set() or self.stop.is_set():
+                raise Paused()
+
+        def progress(event):
+            control()
+            phase = event.pop("phase", "checking_pages")
+            changes = {"phase": phase, "progress": event}
+            if "report" in event:
+                changes["report"] = event.pop("report")
+            self.update(job_id, **changes)
+
+        try:
+            self.update(job_id, state="running")
+            model = ModelRouter(self.db, job_id, control)
+            saved = self.db.cached(job_id, "discovery_report")
+            if saved:
+                report = Report(**saved)
+            else:
+                config = settings()
+                search = CachedSearch(self.db, job_id, config["search_url"], control)
+                fetcher = CachedFetcher(Fetcher(ScrapeConfig(render=body.render, strict_public_network=True,
+                    max_bytes=2_000_000, retries=1), self.stop), self.db, job_id, control)
+                report = discover_verified(body.prompt, model, search, fetcher,
+                    Limits(searches=body.searches, pages=body.discovery_pages, institutions=body.max_colleges, rounds=2), control, progress)
+                self.db.cache(job_id, "discovery_report", asdict(report))
+            self.update(job_id, report=asdict(report))
+            if report.status != "candidates_found":
+                self.update(job_id, state=report.status, phase=report.status, finished=time.time())
+                return
+            sources = sources_from_report(report)
+            if not body.auto_scrape:
+                self.update(job_id, state="sources_ready", phase="sources_ready", finished=time.time())
+                return
+            extracted = self.db.cached(job_id, "extracted")
+            if extracted is None:
+                rows = {s.row: {"sequence": i, "row": s.row, "institution": s.institution,
+                               "status": "queued", "pages": 0, "faculty": 0} for i, s in enumerate(sources, 1)}
+                self.update(job_id, phase="scraping", rows=list(rows.values()))
+                live, events_lock = {}, threading.RLock()
+
+                def crawl_event(e):
+                    with events_lock:
+                        row = rows.get(e.get("row"))
+                        if row is not None:
+                            if e["event"] == "site_start":
+                                row["status"] = "scraping"
+                            elif e["event"] == "page":
+                                row.update(pages=e["fetched"], faculty=e.get("faculty", 0))
+                            elif e["event"] == "site_done":
+                                row.update({k: v for k, v in e.items() if k != "event"})
+                        self.update(job_id, rows=list(rows.values()), progress={"completed": sum(r["status"] in {"done", "resumed", "failed", "error"} for r in rows.values()), "total": len(rows)})
+
+                self.out_dir.mkdir(parents=True, exist_ok=True)
+                run_batch(sources, self.out_dir / f"prompt-{job_id}-raw.xlsx",
+                    ScrapeConfig(render=body.render, strict_public_network=True, workers=2,
+                                 include_offices=True),
+                    body.pages_per_college, resume=True, progress=crawl_event, stop_event=self.stop,
+                    live=live, parallel_sites=2)
+                control()
+                if len(live["summary"]) != len(sources):
+                    raise RuntimeError("Some college workers did not finish. Resume to retry")
+                extracted = {"doctors": [d.to_full_dict() for d in live["merger"].records],
+                             "offices": [o.to_full_dict() for o in live.get("offices", [])],
+                             "pages": [asdict(p) for p in live["pages"]], "sites": live["summary"]}
+                self.db.cache(job_id, "extracted", extracted)
+            control()
+            target = report.plan.get("target", "faculty")
+            docs = [PersonRecord.from_full_dict(d) for d in extracted["doctors"]]
+            docs = [] if target == "offices" else (docs if target == "staff" else [d for d in docs if d.is_relevant])
+            offices = [OfficeRecord.from_full_dict(o) for o in extracted["offices"]] if target in {"offices", "both"} else []
+            self.update(job_id, phase="filtering")
+            filtered, audit = filter_records(report, [*docs, *offices], model, control, progress)
+            docs = [d for d in filtered if isinstance(d, PersonRecord)]
+            offices = [o for o in filtered if isinstance(o, OfficeRecord)]
+            docs.sort(key=lambda d: (d.source_institution.casefold(), (d.get("name") or "").casefold()))
+            per_college = report.plan.get("requested_people_per_institution")
+            if per_college:
+                selected = []
+                for source in sources:
+                    matched = [d for d in docs if d.source_institution == source.institution]
+                    if len(matched) < per_college:
+                        report.issues.append(f"{source.institution}: requested {per_college} people; {len(matched)} matched")
+                    selected.extend(matched[:per_college])
+                docs = selected
+            count = report.plan.get("requested_people")
+            if count and len(docs) < count:
+                report.issues.append(f"Requested {count} people; {len(docs)} matched with available evidence")
+            if count:
+                docs = docs[:count]
+            if any(a.get("evidence_window_limited") for a in audit):
+                report.issues.append("Some long record descriptions exceeded the filtering evidence window; coverage may be limited")
+            matching_colleges = {d.source_institution for d in docs} | {o.source_institution for o in offices}
+            requested_colleges = report.plan.get("requested_institutions")
+            if requested_colleges and len(matching_colleges) < requested_colleges:
+                report.issues.append(f"Requested {requested_colleges} colleges; {len(matching_colleges)} produced matching records after extraction and filtering")
+            if not docs and not offices:
+                report.issues.append("No matching records were extracted; source discovery alone does not establish contact coverage")
+            sites = []
+            for site in extracted["sites"]:
+                matched = [d for d in docs if d.source_institution == site["institution"]]
+                site = {**site, "people": len(matched), "faculty": sum(d.is_relevant for d in matched),
+                        "offices": sum(o.source_institution == site["institution"] for o in offices),
+                        "with_email": sum(bool(d.get("email")) for d in matched),
+                        "with_phone": sum(bool(d.get("phone")) for d in matched),
+                        "with_any_contact": sum(any(d.get(f) for f in ("email", "phone", "contact_email", "contact_phone")) for d in matched)}
+                sites.append(site)
+            limited = any(s["status"] in {"failed", "error"} or s.get("note") for s in sites) or bool(report.issues)
+            result = CrawlResult([u for s in sources for u in s.urls], docs, [PageLog(**p) for p in extracted["pages"]], offices=offices)
+            result.stats = {"prompt": body.prompt, "colleges": len(sources), "people_found": len(docs), "faculty": sum(d.is_relevant for d in docs), "student_offices": len(offices),
+                            "colleges_with_matching_records": len(matching_colleges),
+                            "pages_fetched": len(result.pages), "filtered_out": sum(not a["accepted"] for a in audit),
+                            "coverage": "partial / limited" if limited else "configured run completed; not a guarantee of exhaustive coverage",
+                            "discovery_notes": " | ".join(report.issues), "seconds": round(time.time() - job["started"], 1)}
+            control()
+            self.update(job_id, phase="exporting", progress={})
+            path = to_xlsx(result, self.out_dir / f"prompt-{job_id}.xlsx", sites=sites)
+            self.db.cache(job_id, "filter_audit", audit)
+            self.history.save_people(job_id, docs)
+            self.history.save_offices(job_id, offices)
+            for site in sites:
+                self.history.save_site(job_id, site)
+            self.update(job_id, state="partial" if limited else "done", phase="finished", xlsx=str(path),
+                        report=asdict(report), stats=result.stats, finished=time.time())
+        except ServiceWait as exc:
+            if self.stop.is_set() or self.closed.is_set():
+                state = self.db.get(job_id)["state"]
+                self.update(job_id, state="stopped" if state == "stopping" else ("interrupted" if self.closed.is_set() else "paused"), retry_at=None)
+            else:
+                self.update(job_id, state="waiting", error=str(exc), retry_at=exc.retry_at)
+        except Paused:
+            state = self.db.get(job_id)["state"]
+            self.update(job_id, state="stopped" if state == "stopping" else ("interrupted" if self.closed.is_set() else "paused"), retry_at=None)
+        except ConfigurationError as exc:
+            self.update(job_id, state="failed", error=str(exc), finished=time.time())
+        except Exception as exc:
+            # Do not expose arbitrary HTTP exception bodies or API credentials.
+            self.update(job_id, state="failed", error=f"{type(exc).__name__}: the run could not finish. Progress is saved; resume after checking setup", finished=time.time())
+        finally:
+            self.update(job_id, usage=self.db.stats(job_id))
+            for service in (model, search, fetcher):
+                if service:
+                    service.close()
+
+
+def export_sources(job, path):
+    """The same upload columns; filtered prompts cannot silently broaden on re-upload."""
+    from openpyxl import Workbook
+    from .export import _csv_safe
+    from .sources import TEMPLATE_COLUMNS
+    report = Report(**job["report"])
+    sources = sources_from_report(report)
+    requires_filter = any(c["applies_to"] != "institution" for c in report.plan.get("criteria", []))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Colleges"
+    ws.append([c[1] for c in TEMPLATE_COLUMNS])
+    for source in sources:
+        url_column = "student_office_urls" if report.plan.get("target") == "offices" else "faculty_page_urls"
+        row = {"college_name": source.institution, url_column: "\n".join(source.urls),
+               "enabled": "no" if requires_filter else "yes", "max_pages": job["body"]["pages_per_college"],
+               "notes": ("Use the prompt run to apply individual/page filters; this row is disabled to prevent an unfiltered crawl. " if requires_filter else "") + job["body"]["prompt"]}
+        ws.append([_csv_safe(row.get(c[0], "")) for c in TEMPLATE_COLUMNS])
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    from openpyxl.styles import Font, PatternFill, Alignment
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="123A44")
+    for col in ws.columns:
+        ws.column_dimensions[col[0].column_letter].width = 36
+        for cell in col:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    return Path(path)

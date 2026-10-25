@@ -57,11 +57,24 @@ class BrowserRenderer:
         self._context = self._browser.new_context(
             user_agent=BROWSER_UA, locale="en-IN", viewport={"width": 1366, "height": 900},
             extra_http_headers={"Accept-Language": "en-IN,en;q=0.9"},
+            service_workers="block" if cfg.strict_public_network else "allow",
         )
         self._context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         # Skip heavy resources; page text and data are all that is needed.
         self._context.route(re.compile(r"\.(?:png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|mp4|webm|mp3)(?:\?|$)", re.I),
                             lambda route: route.abort())
+        if cfg.strict_public_network and not cfg.allow_private_hosts:
+            from .network_guard import public_destination
+            def guard(route):
+                try:
+                    public_destination(route.request.url)
+                    if route.request.resource_type in {"image", "font", "media"}:
+                        route.abort()
+                    else:
+                        route.continue_()
+                except Exception:
+                    route.abort()
+            self._context.route("**/*", guard)
         self._timeout = int(cfg.timeout_seconds * 1000)
 
     def fetch(self, url: str, expand: bool = True) -> BrowserResponse:
