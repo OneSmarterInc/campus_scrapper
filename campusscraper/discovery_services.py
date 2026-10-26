@@ -199,12 +199,23 @@ def settings():
     parsed = urlsplit(search_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ConfigurationError("SEARXNG_URL must be an HTTP(S) service URL without credentials or query parameters")
+    providers = [p.strip().lower() for p in os.getenv("MODEL_PROVIDERS", "ollama").split(",") if p.strip()]
+    if not providers or len(set(providers)) != len(providers) or any(p not in {"ollama", "groq", "gemini"} for p in providers):
+        raise ConfigurationError("MODEL_PROVIDERS must be an ordered list of ollama, groq, gemini without duplicates")
+    ollama_url = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+    local = urlsplit(ollama_url)
+    if local.scheme not in {"http", "https"} or not local.hostname or local.username or local.password or local.query or local.fragment:
+        raise ConfigurationError("OLLAMA_URL must be an HTTP(S) service URL without credentials or query parameters")
     return {
+        "providers": providers,
+        "ollama_url": ollama_url,
+        "ollama_model": os.getenv("OLLAMA_MODEL", "qwen3:0.6b"),
+        "ollama_configured": "ollama" in providers,
         "search_url": search_url,
         "groq_model": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
-        "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
+        "groq_configured": "groq" in providers and bool(os.getenv("GROQ_API_KEY")),
+        "gemini_configured": "gemini" in providers and bool(os.getenv("GEMINI_API_KEY")),
     }
 
 
@@ -221,14 +232,14 @@ class ModelRouter:
 
     def ask(self, schema, instruction, payload):
         self.control()
-        key = "model:" + digest([REVISION, self.config["groq_model"], self.config["gemini_model"],
+        key = "model:" + digest([REVISION, self.config["providers"], self.config["ollama_url"], self.config["ollama_model"], self.config["groq_model"], self.config["gemini_model"],
                                   schema.model_json_schema(), instruction, payload])
         cached = self.db.cached(self.job, key)
         if cached is not None:
             return schema.model_validate_json(json.dumps(cached))
-        providers = [p for p in ("groq", "gemini") if self.config[p + "_configured"]]
+        providers = [p for p in self.config["providers"] if self.config[p + "_configured"]]
         if not providers:
-            raise ConfigurationError("Set GROQ_API_KEY (or GEMINI_API_KEY) in the server environment, then restart the portal")
+            raise ConfigurationError("Configure MODEL_PROVIDERS and the selected provider in .env, then restart the portal")
         waits, errors = [], []
         for provider in providers:
             marker = key + ":invalid:" + provider
@@ -265,8 +276,10 @@ class ModelRouter:
 
     def _ask(self, provider, schema, instruction, payload):
         model = self.config[provider + "_model"]
-        if not re.fullmatch(r"[A-Za-z0-9._/-]+", model) or ".." in model:
+        if not re.fullmatch(r"[A-Za-z0-9._/:-]+", model) or ".." in model:
             raise ConfigurationError(f"Invalid {provider} model name")
+        if provider == "ollama":
+            return self._ask_ollama(model, schema, instruction, payload)
         shape = json_schema(schema)
         # Providers use a schema subset; state omitted local constraints explicitly.
         constraints = []
@@ -337,6 +350,31 @@ class ModelRouter:
             return schema.model_validate_json(text)
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise ModelResponseError(f"{provider}: incomplete or invalid structured response; no URLs or contacts were guessed") from None
+
+
+    def _ask_ollama(self, model, schema, instruction, payload):
+        # Local inference has no cloud token quota. Never send API credentials.
+        # Schema validation and evidence verification remain mandatory.
+        body = {"model": model, "stream": False, "think": False,
+                "format": schema.model_json_schema(), "keep_alive": "5m",
+                "options": {"temperature": 0, "num_ctx": 16384, "num_predict": 4096},
+                "messages": [{"role": "system", "content": instruction + "\nReturn only JSON matching the schema. Never invent evidence."},
+                             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]}
+        try:
+            response = self.client.post(self.config["ollama_url"] + "/api/chat", json=body, timeout=180)
+        except httpx.HTTPError:
+            raise ConfigurationError("ollama: cannot reach the local model. Start Ollama, pull the configured model, and retry; check OLLAMA_URL") from None
+        if response.status_code == 404:
+            raise ConfigurationError(f"ollama: model unavailable; run ollama pull {model}")
+        if response.status_code != 200:
+            raise ConfigurationError(f"ollama: HTTP {response.status_code}; check the local Ollama server and available memory")
+        try:
+            data = response.json()
+            if data.get("done") is not True or data.get("done_reason") != "stop":
+                raise ValueError("incomplete response")
+            return schema.model_validate_json(data["message"]["content"])
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise ModelResponseError("ollama: incomplete or invalid structured response; no URLs or contacts were guessed") from None
 
 
 class CachedSearch:

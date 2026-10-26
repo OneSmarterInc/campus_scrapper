@@ -11,6 +11,11 @@ from campusscraper.discovery_services import (
     CachedFetcher, CachedSearch, ConfigurationError, DiscoveryDB, ModelRouter,
     ServiceWait, json_schema, retry_time,
 )
+@pytest.fixture(autouse=True)
+def cloud_provider_selection(monkeypatch):
+    monkeypatch.setenv("MODEL_PROVIDERS", "groq,gemini")
+
+
 from campusscraper.models import Page
 from campusscraper.network_guard import public_destination
 from campusscraper.prompt_discovery import Plan
@@ -99,7 +104,7 @@ def test_no_keys_fails_before_network(db, monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with httpx.Client(transport=httpx.MockTransport(lambda r: pytest.fail("network used"))) as client:
-        with pytest.raises(ConfigurationError, match="Set GROQ"):
+        with pytest.raises(ConfigurationError, match="Configure MODEL_PROVIDERS"):
             ModelRouter(db, "one", client=client).ask(PlanReview, "Review", {})
 
 

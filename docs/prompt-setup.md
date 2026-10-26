@@ -4,9 +4,66 @@ This feature belongs to `OneSmarterInc/campus_scrapper`. SWARM is a separate rep
 The stable pre-feature checkpoint is branch `before-prompting`, commit
 `34e3bb43973160e04a489012394090bd6a5bfcf7`.
 
+## Ollama-first setup (Windows)
+
+Install Ollama from https://ollama.com/download/windows, start it, then:
+
+```powershell
+ollama pull qwen3:0.6b
+```
+
+Add or update these entries in your existing `.env` (preserve other settings):
+
+```dotenv
+MODEL_PROVIDERS=ollama
+OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3:0.6b
+```
+
+Restart the portal after changing configuration. Stop the old waiting run and
+start a new one so that old discovery checkpoints are not reused.
+
+```powershell
+.\.venv\Scripts\python.exe tools\check_prompt_setup.py --live-model
+.\.venv\Scripts\python.exe tools\evaluate_ollama.py
+.\.venv\Scripts\python.exe -m campusscraper serve --port 8001
+```
+
+The first command checks search connectivity and structured model output. The
+second uses the real installed model against four labeled synthetic pages:
+correct faculty, wrong city, homepage-only, and students. It checks count and
+location preservation too. Its JSON report is `outputs/ollama-evaluation.json`.
+Neither command proves live website coverage. A 0.6B model is a small model in
+parameters, not a token allowance; it may fail semantic reasoning. Do not bypass
+evidence checks to make it pass. A larger locally installed model can be selected
+with OLLAMA_MODEL after the same evaluation.
+
+For college-name/faculty-URL Excel output, uncheck **Also extract faculty contacts**.
+Download the source workbook and upload it into the existing Excel crawler.
+Alternatively keep the checkbox checked to extract published contacts in the same
+run. URLs are discovered from search and observed links, never invented by a model.
+Increase Maximum colleges above 10 when requesting 15 or 20 colleges.
+
+Cloud fallback is optional and explicit:
+
+```dotenv
+MODEL_PROVIDERS=ollama,groq
+GROQ_API_KEY=your-key
+```
+
+For cloud-only use, select `MODEL_PROVIDERS=groq` (or `groq,gemini`). Existing
+cloud usage limits remain intact; local Ollama requests do not use these budgets.
+Ollama must run on the server machine; if the portal runs in Docker, loopback
+refers to the container, so configure the appropriate reachable host address.
+
+SearXNG still supplies web search. Ollama does not replace it. The crawler now
+follows observed same-origin faculty/department links even when a small model
+fails to suggest them. A malformed page assessment leaves that page unverified
+and retains other results instead of terminating the entire discovery run.
+
 ## What happens after you enter a prompt
 
-1. Groq interprets the original wording and checks that the plan preserves its requirements and exclusions.
+1. The selected model (Ollama by default) interprets the original wording and checks that the plan preserves its requirements and exclusions.
 2. Your SearXNG service searches for real pages. The model chooses only URLs returned by search or links actually found on retrieved pages.
 3. Official faculty/office pages need supporting page quotations. Institution evidence can come from multiple pages on the same origin, with a check that they describe the same campus.
 4. The existing CampusScraper crawler extracts published contacts. It keeps the existing student exclusion rules and never creates email addresses from name patterns.
@@ -31,6 +88,7 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 notepad .env
 ```
 
+For optional cloud inference, explicitly select `MODEL_PROVIDERS=groq,gemini`.
 Put your Groq key after `GROQ_API_KEY=`. Optionally put a Gemini free-project key
 after `GEMINI_API_KEY=`. Leave the Gemini value blank if you prefer waiting for
 Groq capacity. Never send keys in chat or commit `.env`; it is ignored by Git.
@@ -45,7 +103,7 @@ local request/token budgets control usage; they are not a billing guarantee.
 
 You need a working Docker installation (Linux containers). Docker Engine on Linux
 or WSL can host it; an existing SearXNG service also works. The portal itself runs
-in your Python environment, outside Docker. No GPU or local language model is required.
+in your Python environment, outside Docker. SearXNG itself does not require a GPU or a language model.
 
 ```powershell
 .\.venv\Scripts\python.exe tools\setup_search.py
@@ -55,7 +113,7 @@ docker compose -f compose.search.yml up -d
 
 The setup script generates a random search-service secret and preserves existing
 settings on subsequent runs. The container listens on `127.0.0.1:8080`. JSON search
-is enabled. Google, Bing, DuckDuckGo and Brave engines are configured; availability
+is enabled. Google, DuckDuckGo, Brave, Startpage, Yahoo and Qwant engines are configured; availability
 depends on their current behavior. A blocked engine does not discard usable
 results from the others. No results with engine failures causes a saved wait.
 
@@ -94,13 +152,14 @@ or completion time is shown while the total work is unknown.
 
 ## Quotas, pause and recovery
 
-- Groq is attempted first; Gemini is used if configured and Groq cannot answer.
-- The same schema and evidence checks apply to both providers. A fallback does
+- Ollama is the default and requires no cloud key. MODEL_PROVIDERS controls the explicit order. Cloud providers are never used merely because a key exists.
+- The same schema and evidence checks apply to all providers. A fallback does
   not guarantee identical semantic judgment; live acceptance tests are still needed.
 - Successful searches, retrieved pages, model decisions and extracted data are
   saved in SQLite. Completed colleges also keep the crawler's existing resume caches.
-- When both providers are unavailable, the portal saves the job, shows the reason
-  and next attempt, and retries while the server remains open. It does not switch
+- For temporary cloud quota/service failures, the portal saves the job and retries
+  at the displayed time. Missing Ollama models or unreachable local servers stop
+  with setup instructions; fix the server and retry the run. It does not switch
   to a paid service, rotate API keys, or export unfiltered contacts.
 - Pause/Stop finish the current network operation. A paused/interrupted college
   may be crawled again on resume; completed colleges are reused. Discovery/model

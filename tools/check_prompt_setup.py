@@ -38,9 +38,9 @@ def main():
         except Exception as exc:
             print(f"SearXNG: {type(exc).__name__}: {exc}")
             failures += 1
-        configured = [p for p in ("groq", "gemini") if config[p + "_configured"]]
+        configured = [p for p in config["providers"] if config[p + "_configured"]]
         if not configured:
-            print("Models: no API keys configured. Edit .env, then run this check again.")
+            print("Models: no selected providers configured. Edit .env, then run this check again.")
             failures += 1
         router = ModelRouter(db, "check", client=client)
         for provider in configured:
@@ -50,16 +50,20 @@ def main():
                     if not result.ok:
                         raise ValueError("invalid check response")
                 else:
-                    if provider == "groq":
+                    if provider == "ollama":
+                        response = client.get(config["ollama_url"] + "/api/tags")
+                    elif provider == "groq":
                         response = client.get("https://api.groq.com/openai/v1/models", headers={"Authorization": "Bearer " + os.environ["GROQ_API_KEY"]})
                     else:
                         response = client.get("https://generativelanguage.googleapis.com/v1beta/models/" + config["gemini_model"], headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]})
                     response.raise_for_status()
+                    if provider == "ollama" and config["ollama_model"] not in {m.get("name") for m in response.json().get("models", [])}:
+                        raise ValueError("Configured Ollama model is not installed")
                     if provider == "groq" and config["groq_model"] not in {m.get("id") for m in response.json().get("data", [])}:
                         raise ValueError("Configured Groq model is unavailable")
                 print(f"{provider}: OK ({config[provider + '_model']})")
             except Exception as exc:
-                print(f"{provider}: {type(exc).__name__}. Check key, model availability and account quota.")
+                print(f"{provider}: {type(exc).__name__}. Check server availability, installed model, or cloud key/quota.")
                 failures += 1
         db.db.close()
     print("These checks confirm connectivity, not faculty coverage or semantic accuracy.")

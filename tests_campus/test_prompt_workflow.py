@@ -159,6 +159,7 @@ def test_source_template_disables_rows_when_person_filters_needed(tmp_path):
 @pytest.fixture
 def workflow(tmp_path, monkeypatch, site_url):
     import campusscraper.prompt_jobs as jobs
+    monkeypatch.setenv("MODEL_PROVIDERS", "groq,gemini")
     monkeypatch.setenv("GROQ_API_KEY", "fixture-key-never-real")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("GROQ_TPM", "100000")  # tests must not wait for real-minute pacing
@@ -182,7 +183,7 @@ def workflow(tmp_path, monkeypatch, site_url):
     model_calls = []
     def model_http(req):
         body = json.loads(req.content)
-        name = body["response_format"]["json_schema"]["name"]
+        name = body["format"]["title"] if "format" in body else body["response_format"]["json_schema"]["name"]
         payload = json.loads(body["messages"][1]["content"])
         model_calls.append(name)
         if name == "Plan":
@@ -207,6 +208,8 @@ def workflow(tmp_path, monkeypatch, site_url):
                 "evidence": [{"criterion_id": "topic", "quote": "Machine Learning"}] if "Anitha" in r["record_name"] else []} for r in payload["records"]]}
         else:
             raise AssertionError(name)
+        if "format" in body:
+            return httpx.Response(200, json={"done": True, "done_reason": "stop", "message": {"content": json.dumps(data)}})
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(data)}}], "usage": {"total_tokens": 100}})
     client = httpx.Client(transport=httpx.MockTransport(model_http))
     monkeypatch.setattr(jobs, "ModelRouter", lambda db, job, control: ModelRouter(db, job, control, client=client))
@@ -415,3 +418,9 @@ def test_portal_api_hides_unfiltered_results_and_keys(workflow, monkeypatch):
     assert client.get(f"/api/discovery/{job_id}/evidence.json").status_code == 200
     assert client.post("/api/discovery", json={"prompt": "   "}).status_code == 422
     assert client.post("/api/discovery", json={"prompt": "faculty", "search_url": "http://evil"}).status_code == 422
+
+
+def test_ollama_prompt_to_real_crawler_and_excel(workflow, monkeypatch):
+    # Real crawler/export with mocked model transport: no cloud API required.
+    monkeypatch.setenv("MODEL_PROVIDERS", "ollama")
+    test_complete_prompt_to_excel_and_history(workflow)

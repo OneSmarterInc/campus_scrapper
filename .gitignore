@@ -14,3 +14,6 @@ tests_campus/site/
 searxng/settings.yml
 searxng/data/
 searxng/settings.yml.*
+
+# Local model evaluation reports
+outputs/ollama-evaluation.json

@@ -252,3 +252,27 @@ crawl-to-Excel integration. This proves bounded work in controlled fixtures, not
 a production completion time or live-college precision. Live Groq/SearXNG testing
 remains unavailable in this workspace. Start a new run after updating; discovery
 checkpoint revision changed to avoid reusing old multi-fragment state.
+
+
+## Ollama-first integration (2026-10-26)
+
+Default provider is local Ollama with qwen3:0.6b. Cloud fallbacks require explicit
+MODEL_PROVIDERS configuration. Old Groq cooldowns and token budgets cannot block
+local inference. Request schema, completed-response checks, bounded repair, literal
+evidence checks, and model/endpoint cache separation are covered by regressions.
+Observed same-origin faculty/department navigation no longer depends entirely on
+model-selected links. Invalid page responses leave pages unverified and preserve
+other results. Plan validation still fails closed.
+
+Validation: 226 Python tests passed initially; adding Ollama-to-crawler-to-Excel
+integration produced 41 passing focused workflow/provider tests (one additional
+test). Ten UI DOM tests passed. Model HTTP responses in automated tests are mocked;
+the workflow test uses the real fixture HTTP crawler and workbook export.
+
+Real qwen3:0.6b evaluation was attempted with tools/evaluate_ollama.py and blocked:
+no local Ollama server/executable is installed here, and direct access to
+ollama.com fails DNS (proxied download also timed out). Therefore there are NO
+measured real-model accuracy or live 15/20-college coverage results for this
+release. The four-case evaluator is included for running against the installed
+local model; its output is not a live-web benchmark. SearXNG remains necessary
+for discovery; this change does not claim to fix unavailable upstream engines.

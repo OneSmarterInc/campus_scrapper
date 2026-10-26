@@ -471,6 +471,17 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                             work["considered"].append(final)
                         text, chunks, links = page_content(page, allow_local)
                         chunks = [compact_evidence(text, context_terms)]
+                        # Navigate real campus links even if a small model misses
+                        # follow_link_ids. These are candidates, never auto-accepted.
+                        navigation = []
+                        for link in links:
+                            candidate = eligible(link["url"])
+                            if (candidate and candidate not in work["considered"]
+                                and urlsplit(candidate).netloc == urlsplit(final).netloc
+                                and re.search(r"facult|staff|people|directory|department|academics",
+                                              link["label"] + " " + urlsplit(candidate).path, re.I)):
+                                navigation.append(candidate)
+                        work["queue"] = list(dict.fromkeys(navigation[:6] + work["queue"]))
                         origin = urlsplit(final).netloc
                         documents = work["context"].setdefault(origin, [])
                         related = [{"url": d["url"], "text": d["summary"]}
@@ -551,6 +562,11 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                             if next_url and next_url not in work["considered"]:
                                 next_urls.append(next_url)
                     work["queue"] = list(dict.fromkeys(next_urls + work["queue"]))
+                    finish_page()
+                except ModelResponseError:
+                    # Failed structured output is not evidence that a page qualifies.
+                    # Preserve other colleges and explore already observed links.
+                    report.issues.append(f"Model could not assess {url}; page left unverified")
                     finish_page()
                 except (ServiceWait, ConfigurationError, Paused):
                     raise

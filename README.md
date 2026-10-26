@@ -8,7 +8,7 @@ Give it a college website (home page, faculty page, department page, or one facu
 Student offices are how you reach students. Pages that name individual students (student coordinators, club office-bearers, "III Year CSE", roll numbers) are read, but those students' names, phones and emails are left out of every output. The **Student Lines Left Out** column counts them, so you can see when a page had more.
 
 **New: prompt to contacts.** Under **New run**, describe the colleges or faculty
-you need. Optional Groq + SearXNG discovery finds official source pages, the
+you need. Ollama-first + SearXNG discovery (Groq/Gemini optional) finds official source pages, the
 existing crawler extracts contacts, and prompt-specific filters run before export.
 Gemini can provide fallback capacity. Saved jobs pause/resume across quota
 interruptions. This optional feature needs free-tier API credentials and a

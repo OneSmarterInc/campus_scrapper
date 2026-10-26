@@ -10,9 +10,9 @@ async function promptSetup() {
   const r = await api('/api/discovery/config');
   if (!r.ok) { say($('p-config'), r.error, 'bad'); return; }
   const c = r.data;
-  const providers = [c.groq_configured ? 'Groq' : '', c.gemini_configured ? 'Gemini' : ''].filter(Boolean);
+  const providers = (c.providers || ['groq', 'gemini']).filter(p => c[p + '_configured']).map(p => p === 'ollama' ? `Ollama (${c.ollama_model})` : p);
   say($('p-config'), c.ready ? `${providers.join(' + ')} configured. Search service: ${c.search_url}. Availability is checked when a run starts.`
-    : 'Setup needed: add GROQ_API_KEY to your server’s .env file and start SearXNG. See docs/prompt-setup.md. Excel and URL runs still work.', c.ready ? 'info' : 'bad');
+    : 'Setup needed: configure Ollama in your server’s .env file and start SearXNG. See docs/prompt-setup.md. Excel and URL runs still work.', c.ready ? 'info' : 'bad');
   const runs = await api('/api/discovery');
   if (runs.ok && runs.data.jobs.length && !promptId) attachPrompt(runs.data.jobs[0].id);
 }

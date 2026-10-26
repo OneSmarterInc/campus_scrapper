@@ -806,7 +806,7 @@ from .prompt_jobs import PromptIn  # noqa: E402 - keep the workflow separate fro
 def prompt_config():
     from .discovery_services import settings
     config = settings()
-    config["ready"] = config["groq_configured"] or config["gemini_configured"]
+    config["ready"] = config["ollama_configured"] or config["groq_configured"] or config["gemini_configured"]
     # This is configuration presence, not a claim that the remote APIs are healthy.
     return config
 

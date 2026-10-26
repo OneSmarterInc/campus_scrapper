@@ -75,8 +75,8 @@ class PromptManager:
 
     def create(self, body, start=True):
         config = settings()
-        if not (config["groq_configured"] or config["gemini_configured"]):
-            raise ConfigurationError("Add GROQ_API_KEY to the server environment and restart. GEMINI_API_KEY is an optional fallback")
+        if not (config["ollama_configured"] or config["groq_configured"] or config["gemini_configured"]):
+            raise ConfigurationError("Configure Ollama or an explicitly selected cloud provider in .env and restart")
         job = {"id": uuid.uuid4().hex[:10], "state": "queued", "phase": "queued", "started": time.time(),
                "finished": None, "body": body.model_dump(), "report": {}, "rows": [], "progress": {},
                "error": None, "retry_at": None, "xlsx": None, "stats": {}}
