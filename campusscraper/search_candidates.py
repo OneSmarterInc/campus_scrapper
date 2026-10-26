@@ -70,3 +70,21 @@ def relaxed_queries(queries, searched):
         if relaxed and relaxed != query and relaxed not in searched and relaxed not in output:
             output.append(relaxed)
     return output[:3]
+
+
+def unrelated_result(query, result):
+    """Conservative lexical triage, not an eligibility or truth decision.
+
+    Require two query words for multiword searches; keep sparse metadata and
+    short/acronym queries. This catches generic one-word and random SERPs.
+    """
+    query = re.sub(r"-?site:\S+", "", query.casefold())
+    terms = set(re.findall(r"[^\W_]{3,}", query)) - {
+        "the", "and", "for", "with", "from", "find", "official", "website", "urls",
+    }
+    if len(terms) < 2 or not (result.get("title") or result.get("content")):
+        return False
+    text = " ".join(str(result.get(k, "")) for k in ("url", "title", "content")).casefold()
+    # Prefixes accommodate faculty/faculties, college/colleges, etc.
+    words = set(re.findall(r"[^\W_]{3,}", text))
+    return sum(any(w.startswith(t.rstrip("s")) for w in words) for t in terms) < 2

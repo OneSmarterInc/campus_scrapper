@@ -21,7 +21,7 @@ import httpx
 
 from .models import Page
 from .fetch import _ssl_verify
-from .search_candidates import rank_urls
+from .search_candidates import rank_urls, unrelated_result
 
 REVISION = 1
 
@@ -307,16 +307,17 @@ class CachedSearch:
         if self.owns_client:
             self.client.close()
 
-    def search(self, query):
+    def search(self, query, _fallback=False):
         self.control()
-        key = "search:" + digest([self.base_url, query])
+        key = "search:" + digest(["quality-v2", self.base_url, query, _fallback])
         cached = self.db.cached(self.job, key)
         if cached is not None:
             self.warnings.extend(cached["warnings"])
             self.search_details[query] = cached.get("details", {"results": [{"url": u} for u in cached["urls"]]})
             return cached["urls"]
         try:
-            response = self.client.get(self.base_url + "/search", params={"q": query, "format": "json", "categories": "general"})
+            response = self.client.get(self.base_url + "/search", params={"q": query, "format": "json", "categories": "general", "safesearch": 2,
+                **({"engines": "google,duckduckgo,brave"} if _fallback else {})})
             if response.status_code in (401, 403):
                 raise ConfigurationError("SearXNG refused JSON search. Enable search.formats: [html, json] in its settings.yml")
             if response.status_code == 429 or response.status_code >= 500:
@@ -338,13 +339,35 @@ class CachedSearch:
             results.append({"url": r["url"], "title": str(r.get("title") or "")[:250],
                             "content": str(r.get("content") or "")[:800],
                             "engines": [str(e)[:60] for e in (r.get("engines") or [])[:8]]})
-        by_url = {r["url"]: r for r in results}
+        rejected = [r for r in results if unrelated_result(query, r)]
+        by_url = {r["url"]: r for r in results if r not in rejected}
         urls = rank_urls(list(by_url), by_url, query)[:30]
         unavailable = [str(e[0])[:60] for e in data.get("unresponsive_engines", [])
                        if isinstance(e, (list, tuple)) and e]
-        details = {"results": [by_url[u] for u in urls], "unavailable_engines": unavailable}
+        details = {"results": [by_url[u] for u in urls], "unavailable_engines": unavailable,
+                   "rejected_results": rejected, "fallback_used": _fallback}
         self.search_details[query] = details
         warnings = []
+        if rejected and not urls and not _fallback:
+            # One bounded recovery request, never send off-topic pages to the LLM.
+            try:
+                recovered = self.search(query, _fallback=True)
+                if not recovered:
+                    raise IncompleteSearch("Alternative engines returned no results")
+                fallback_details = self.search_details[query]
+                fallback_details["initial_rejected_results"] = rejected
+                self.db.cache(self.job, key, {"urls": recovered, "warnings": self.warnings,
+                                             "details": fallback_details})
+                return recovered
+            except (ServiceWait, ConfigurationError) as exc:
+                details["fallback_error"] = str(exc)
+                details["fallback_used"] = True
+                details["fallback_response"] = dict(self.search_details.get(query, {}))
+            self.search_details[query] = details
+            raise ConfigurationError("Search returned unrelated results and alternative engines could not recover. "
+                                     "Check SearXNG engine availability; no unrelated pages were sent to Groq.")
+        if rejected and not urls:
+            raise IncompleteSearch("Alternative search engines also returned unrelated results")
         if data.get("unresponsive_engines"):
             if not urls:
                 raise IncompleteSearch("Search engines returned no usable results while some were unavailable; retry later")

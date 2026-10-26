@@ -21,6 +21,7 @@ class Check(BaseModel):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--live-model", action="store_true", help="also make one small structured-output request to each configured provider")
+    parser.add_argument("--query", default="Mumbai engineering college faculty directory", help="Search relevance probe")
     args = parser.parse_args()
     config = settings()
     failures = 0
@@ -28,12 +29,14 @@ def main():
         db = DiscoveryDB(Path(temp) / "check.db")
         search = CachedSearch(db, "check", config["search_url"], client=client)
         try:
-            urls = search.search("university official faculty directory")
-            print(f"SearXNG: OK, {len(urls)} result URLs")
+            urls = search.search(args.query)
+            print(f"SearXNG: {len(urls)} candidate URLs (not yet page-verified)")
+            for url in urls[:5]:
+                print("  " + url)
             for warning in search.warnings:
                 print("  " + warning)
         except Exception as exc:
-            print(f"SearXNG: {type(exc).__name__}: check the service URL, container logs and JSON settings")
+            print(f"SearXNG: {type(exc).__name__}: {exc}")
             failures += 1
         configured = [p for p in ("groq", "gemini") if config[p + "_configured"]]
         if not configured:

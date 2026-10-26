@@ -153,3 +153,23 @@ model correctly understood a page or identified its official owner.
 The original stable branch `before-prompting` remains available at
 `34e3bb43973160e04a489012394090bd6a5bfcf7`. This change belongs only to the
 `campus_scrapper` repository; SWARM remains separate.
+
+
+## Search response quality repair (2026-10-26)
+
+Run 073d72c45b correctly interpreted the Mumbai request, but every returned
+result came from Bing while Google, DuckDuckGo and Brave were unavailable.
+Replay of its five recorded query responses rejects all 47 unrelated result
+entries before crawling. No live model call is needed for this triage.
+
+Search now screens metadata for minimal query overlap, requests strict safe
+search, and tries one alternative-engine request if every result is unrelated.
+Failure to recover is an explicit search configuration/availability failure,
+not an empty success or an indefinite model-quota wait. Evidence retains rejected
+results and recovery diagnostics. This is a heuristic, not a guarantee of
+location, official ownership, faculty coverage or semantic correctness; those
+still require page verification. Sparse metadata and short queries remain eligible.
+
+Live end-to-end validation remains blocked here: no configured Groq/Gemini key
+and no reachable SearXNG instance. The recorded-response replay and mocked
+recovery tests do not establish that the user's unavailable engines are restored.

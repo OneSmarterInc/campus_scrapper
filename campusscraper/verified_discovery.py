@@ -304,6 +304,7 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                     continue
                 emit("searching", current=query)
                 # Advance only after the request finishes. A service wait keeps this query pending.
+                search_error = None
                 try:
                     urls = search.search(query)
                     outcome = "results" if urls else "empty"
@@ -311,6 +312,8 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                 except IncompleteSearch as exc:
                     urls, outcome = [], "incomplete"
                     work["incomplete"][query] = exc.retry_at
+                except ConfigurationError as exc:
+                    urls, outcome, search_error = [], "failed", exc
                 if not repeated:
                     work["searched"].append(query)
                     report.searches += 1
@@ -319,8 +322,16 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                 prior = next((a for a in report.search_attempts if a["query"] == query), {})
                 attempt = {"query": query, "status": outcome, "result_count": len(urls),
                            "attempts": prior.get("attempts", 0) + 1, "results": results,
-                           "unavailable_engines": details.get("unavailable_engines", [])}
+                           "unavailable_engines": details.get("unavailable_engines", []),
+                           "rejected_results": details.get("rejected_results", []),
+                           "initial_rejected_results": details.get("initial_rejected_results", []),
+                           "fallback_used": details.get("fallback_used", False),
+                           "fallback_response": details.get("fallback_response", {}),
+                           "error": str(search_error) if search_error else details.get("fallback_error", "")}
                 report.search_attempts = [a for a in report.search_attempts if a["query"] != query] + [attempt]
+                if search_error:
+                    emit("searching", current=query)
+                    raise search_error
                 for item in results:
                     normalized = safe_url(item["url"], allow_local)
                     if normalized:

@@ -245,3 +245,19 @@ git switch -c inspect-before-prompting origin/before-prompting
 ```
 
 This preserves later commits. Do not use a hard reset to inspect the checkpoint.
+
+
+If search produces unrelated results, update the search container and run the
+quality probe before starting a new job:
+
+```powershell
+docker compose -f compose.search.yml pull
+docker compose -f compose.search.yml up -d
+.\.venv\Scripts\python.exe tools\check_prompt_setup.py --query "Mumbai engineering college faculty directory"
+```
+
+The probe prints candidate URLs and reports failed recovery explicitly. Candidate
+URLs are not yet verified faculty directories. If alternative engines remain
+unavailable, inspect SearXNG container logs; changing the language model key will
+not repair the search service. Start a new run after updating the portal so old
+queued search results are not reused.

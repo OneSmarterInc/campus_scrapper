@@ -167,7 +167,7 @@ def test_real_pune_queries_skip_dictionary_and_keep_search_evidence(tmp_path):
             report = discover_verified(prompt, ScriptedModel(p, REVIEW, d, d), search, fetch, Limits(rounds=1))
             assert {c["url"] for c in report.candidates} == set(urls)
             assert dictionary not in fetch.urls
-            assert report.skipped_sources[0]["url"] == dictionary
+            assert report.search_attempts[0]["rejected_results"][0]["url"] == dictionary
             assert [a["query"] for a in report.search_attempts] == queries
             assert all(a["unavailable_engines"] == ["offline-engine"] for a in report.search_attempts)
             assert report.pages == 2 and report.model_calls == 4
