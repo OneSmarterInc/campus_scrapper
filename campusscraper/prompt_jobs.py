@@ -21,7 +21,8 @@ from .export import to_xlsx
 from .fetch import Fetcher
 from .models import OfficeRecord, PersonRecord
 from .prompt_discovery import Limits, Report
-from .site_discovery import College, discover_colleges, read_request, sources_from_colleges
+from .request_reader import read_request_naturally
+from .site_discovery import College, discover_colleges, sources_from_colleges
 from .verified_discovery import discover_verified, filter_records, sources_from_report
 
 ACTIVE = {"queued", "running", "waiting", "pausing", "stopping"}
@@ -147,26 +148,29 @@ class PromptManager:
                 self.wake.wait(2)
                 self.wake.clear()
 
-    def _discover_sites(self, body, search, progress, control):
+    def _discover_sites(self, body, search, progress, control, ask=None):
         """Find colleges and their faculty pages by crawling each site.
 
         Search only suggests where to look. A college appears in the result
         because our extractor read its staff from one of its own pages.
         """
-        request = read_request(body.prompt)
-        want = min(request.count, body.max_colleges)
+        request, read_notes = read_request_naturally(body.prompt, ask)
+        # A request that names no number is limited only by the form.
+        wanted = request.count if request.count_stated else body.max_colleges
+        want = min(wanted, body.max_colleges)
         report = Report(prompt=body.prompt)
+        report.issues.extend(read_notes)
         criteria = [{"id": "institution_type", "requirement": f"{request.kind} college",
                      "prompt_quote": request.kind, "applies_to": "institution"}] if request.kind else []
         if request.location:
             criteria.append({"id": "location", "requirement": f"Located in {request.location}",
                              "prompt_quote": request.location, "applies_to": "institution"})
         report.plan = {"objective": body.prompt, "target": request.target, "criteria": criteria,
-                       "requested_institutions": request.count, "explanation": request.summary(),
+                       "requested_institutions": wanted, "explanation": request.summary(),
                        "request": request.as_dict(), "colleges": []}
-        if request.count > body.max_colleges:
-            report.issues.append(f"Requested {request.count} colleges but this run is limited to "
-                                 f"{body.max_colleges}. Raise 'Maximum colleges' to {request.count}")
+        if wanted > body.max_colleges:
+            report.issues.append(f"Requested {wanted} colleges but this run is limited to "
+                                 f"{body.max_colleges}. Raise 'Maximum colleges' to {wanted}")
         if request.unread_place:
             report.issues.append(
                 f"\u201c{request.unread_place}\u201d was not recognised as a city, so colleges were not "
@@ -262,7 +266,10 @@ class PromptManager:
                 fetcher = CachedFetcher(Fetcher(ScrapeConfig(render=body.render, strict_public_network=True,
                     max_bytes=2_000_000, retries=1), self.stop), self.db, job_id, control)
                 if body.engine == "sites":
-                    report = self._discover_sites(body, search, progress, control)
+                    # The model only helps read the request; the sites themselves
+                    # still decide, so a model that is missing costs nothing.
+                    ask = model.ask if any(settings()[p + "_configured"] for p in ("ollama", "groq", "gemini")) else None
+                    report = self._discover_sites(body, search, progress, control, ask)
                 else:
                     report = discover_verified(body.prompt, model, search, fetcher,
                         Limits(searches=body.searches, pages=body.discovery_pages, institutions=body.max_colleges, rounds=2), control, progress,
@@ -296,7 +303,13 @@ class PromptManager:
                                 row.update(pages=e["fetched"], faculty=e.get("faculty", 0))
                             elif e["event"] == "site_done":
                                 row.update({k: v for k, v in e.items() if k != "event"})
-                        self.update(job_id, rows=list(rows.values()), progress={"completed": sum(r["status"] in {"done", "resumed", "failed", "error"} for r in rows.values()), "total": len(rows)})
+                        done = sum(r["status"] in {"done", "resumed", "failed", "error"} for r in rows.values())
+                        busy = [r["institution"] for r in rows.values() if r["status"] == "scraping"]
+                        self.update(job_id, rows=list(rows.values()), progress={
+                            "completed": done, "total": len(rows),
+                            "pages": sum(r["pages"] for r in rows.values()),
+                            "faculty": sum(r["faculty"] for r in rows.values()),
+                            "current": ", ".join(busy[:3])})
 
                 self.out_dir.mkdir(parents=True, exist_ok=True)
                 run_batch(sources, self.out_dir / f"prompt-{job_id}-raw.xlsx",

@@ -83,6 +83,7 @@ def _place_word(text):
 class Request:
     """What the user asked for, read from the prompt without a model."""
     count: int = 10
+    count_stated: bool = False   # True only when the request itself names a number
     kind: str = ""
     location: str = ""
     target: str = "faculty"
@@ -92,7 +93,8 @@ class Request:
     unread_place: str = ""     # a place the request names that this reader could not match
 
     def as_dict(self):
-        return {"count": self.count, "kind": self.kind, "location": self.location,
+        return {"count": self.count, "count_stated": self.count_stated,
+                "kind": self.kind, "location": self.location,
                 "target": self.target, "names": list(self.names),
                 "departments": list(self.departments),
                 "unfiltered_conditions": self.unfiltered_conditions,
@@ -131,19 +133,23 @@ def read_request(prompt):
     unread_place = "" if (city or names) else _place_word(text)
     count_match = re.search(r"\b(\d{1,3})\s+(?:\w+\s+){0,2}?(?:colleges?|universit|institutes?)", low)
     word_match = re.search(r"\b(" + "|".join(COUNT_WORDS) + r")\s+(?:\w+\s+){0,2}?(?:colleges?|universit|institutes?)", low)
+    stated = True
     if count_match:
         count = int(count_match.group(1))
     elif word_match:
         count = COUNT_WORDS[word_match.group(1)]
+    elif names:
+        count = len(names)
     else:
-        count = len(names) or 10
+        count, stated = 10, False   # the run limit on the form decides instead
     from .relevance import departments_in
     departments = departments_in(text) if re.search(r"\bdepartment|\bcse\b|\bece\b|\beee\b|\bit\b|"
                                                     r"computer science|mechanical|civil|electronic", low) else []
     wants_office = bool(OFFICE_WORDS.search(low))
     wants_faculty = bool(FACULTY_WORDS.search(low)) or not wants_office
     target = "both" if wants_office and wants_faculty else ("offices" if wants_office else "faculty")
-    return Request(count=max(1, min(count, 100)), kind=kind, location=city, target=target, names=names,
+    return Request(count=max(1, min(count, 100)), count_stated=stated,
+                   kind=kind, location=city, target=target, names=names,
                    departments=departments, unfiltered_conditions=bool(PERSON_CONDITIONS.search(text)),
                    unread_place=unread_place)
 
@@ -187,7 +193,15 @@ def site_queries(kind="", location="", extra=()):
             f"{what} {where} faculty".strip(),
             f"{what} {where} site:ac.in".strip(),
             f"{what} {where} department faculty list".strip(),
-            f"list of {what} in {where}" if where else f"list of {what}"]
+            f"list of {what} in {where}" if where else f"list of {what}",
+            # More ways a person looks for the same thing. One search engine page
+            # rarely holds twenty official sites, so ask in several directions.
+            f"top {what} in {where}" if where else f"top {what}",
+            f"{what} {where} faculty directory".strip(),
+            f"{what} {where} department of computer engineering faculty".strip(),
+            f"{what} {where} autonomous affiliated".strip(),
+            f"engineering colleges {where} NAAC accredited".strip() if where else "",
+            f"{what} near {where}".strip() if where else ""]
     return list(dict.fromkeys([q for q in [*extra, *base] if q and len(q) < 200]))
 
 
@@ -339,7 +353,7 @@ def survey_site(homepage, make_crawler, kind="", location="", target="faculty", 
 
 
 def discover_colleges(search, make_crawler, want=10, kind="", location="", target="faculty",
-                      queries=(), names=(), max_searches=12, max_sites=40, workers=6,
+                      queries=(), names=(), max_searches=12, max_sites=90, workers=6,
                       site_seconds=45, control=lambda: None, progress=lambda event: None):
     """Search, then prove each site by crawling it. Returns (colleges, rejected, notes)."""
     notes, results, searched = [], [], []

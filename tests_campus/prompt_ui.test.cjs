@@ -53,7 +53,8 @@ test('quota wait shows saved progress and controls without a fake percentage',as
     assert.match(p.$('p-work').textContent,/Progress is saved/);
     assert.equal(p.$('p-pause').disabled,false);
     assert.equal(p.$('p-download').hidden,true);
-    assert.equal(p.$('prompt-card').querySelectorAll('.bar').length,0);
+    // A bar may exist for the crawl, but nothing may show a made-up percentage here.
+    assert.equal([...p.$('prompt-card').querySelectorAll('.bar')].filter(b=>!b.hidden).length,0);
   } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
 });
 
@@ -196,4 +197,22 @@ test('run states are shown as words, and long text is clamped with the full valu
     assert.ok(row.includes(`title="${long}"`), 'the whole title stays in the tooltip');
     await new Promise(r => setTimeout(r, 50));
   } finally { p.dom.window.close(); }
+});
+
+test('while colleges are being crawled the counters show the crawl, not the search', async () => {
+  const job = saved({state: 'running', phase: 'scraping',
+    progress: {completed: 3, total: 8, pages: 182, faculty: 247, current: 'Example College'},
+    rows: [{institution: 'Example College', status: 'scraping', pages: 40, faculty: 12}]});
+  const p = portal(job);
+  try {
+    await p.w.testPrompt.open('run1');
+    const stats = p.$('p-stats').textContent;
+    assert.match(stats, /Colleges crawled/);
+    assert.match(stats, /3 of 8/);
+    assert.match(stats, /182/, 'pages read are shown');
+    assert.match(stats, /247/, 'faculty found so far are shown');
+    assert.match(p.$('p-work').textContent, /Reading college websites/);
+    assert.match(p.$('p-work').textContent, /now on Example College/);
+    assert.equal(p.$('p-bar').hidden, false, 'the crawl shows how far along it is');
+  } finally { await new Promise(r => setImmediate(r)); p.dom.window.close(); }
 });

@@ -427,7 +427,11 @@ def test_ollama_prompt_to_real_crawler_and_excel(workflow, monkeypatch):
 
 
 def test_sites_engine_prompt_to_excel_without_calling_any_model(workflow):
-    """The whole chain — prompt, search, verified URLs, contacts, Excel — with no model."""
+    """The whole chain - prompt, search, verified URLs, contacts, Excel.
+
+    A model may be asked to read the request, once. Nothing else in this engine
+    asks a model anything: the sites themselves decide which colleges qualify.
+    """
     manager, searches, calls, _ = workflow
     job = manager.create(PromptIn(prompt="Find 1 engineering college in Hyderabad and return its faculty page URLs",
                                   render="never", pages_per_college=60, site_pages=10), start=False)
@@ -435,7 +439,7 @@ def test_sites_engine_prompt_to_excel_without_calling_any_model(workflow):
     saved = manager.db.get(job["id"])
     # "partial" is the honest state when a site reports dead links; both carry results.
     assert saved["state"] in {"done", "partial"}, saved.get("error")
-    assert calls == []  # no model was asked anything
+    assert calls in ([], ["RequestRead"]), f"a model judged something: {calls}"
     report = saved["report"]
     assert report["status"] == "candidates_found"
     assert report["plan"]["request"]["kind"] == "engineering"
@@ -459,6 +463,6 @@ def test_sites_engine_states_what_it_did_not_filter(workflow):
                                   render="never", auto_scrape=False, site_pages=8), start=False)
     manager.execute(job["id"])
     report = manager.db.get(job["id"])["report"]
-    assert calls == []
+    assert calls in ([], ["RequestRead"]), f"a model judged something: {calls}"
     assert any("not applied" in issue for issue in report["issues"])
     assert any("Requested 2 colleges" in issue for issue in report["issues"])
