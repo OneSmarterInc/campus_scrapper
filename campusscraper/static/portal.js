@@ -3,12 +3,21 @@ const VIEWS = ['dashboard', 'new', 'runs', 'directory', 'offices'];
 let viewTimer = null;
 
 function fmtTime(t) { if (!t) return ''; const d = new Date(t * 1000); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+// Date and time on their own lines: a narrow column, never cut short.
+function timeCell(t) { if (!t) return ''; const d = new Date(t * 1000);
+  return `${d.toLocaleDateString()}<span class="sub">${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>`; }
 function fmtDur(a, b) {
   if (!a) return ''; const s = Math.max(0, Math.round(((b || Date.now() / 1000) - a)));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
 }
 const STATE_CLASS = { done: 'ok', running: 'ok', paused: 'warn', pausing: 'warn', waiting: 'warn', partial: 'warn', clarify: 'warn', stopping: 'warn', interrupted: 'warn', stopped: 'warn', failed: 'bad' };
-function stateCell(s) { return `<span class="${STATE_CLASS[s] || ''}"><b>${esc(s)}</b></span>`; }
+// States are stored as code words; people read words.
+const STATE_WORDS = { queued: 'Queued', running: 'Running', paused: 'Paused', pausing: 'Pausing', stopping: 'Stopping',
+  stopped: 'Stopped', waiting: 'Waiting', done: 'Finished', partial: 'Finished with gaps', failed: 'Failed',
+  interrupted: 'Interrupted', clarify: 'Needs a detail', sources_ready: 'Source URLs ready',
+  no_candidates: 'No colleges verified', planning_failed: 'Could not read the prompt', unsupported: 'Not supported' };
+function stateWord(s) { return STATE_WORDS[s] || String(s || '').replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()); }
+function stateCell(s) { return `<span class="${STATE_CLASS[s] || ''}"><b>${esc(stateWord(s))}</b></span>`; }
 
 function show(view) {
   if (!VIEWS.includes(view)) view = 'dashboard';
@@ -40,14 +49,14 @@ async function loadDashboard() {
   $('d-coll').innerHTML = cs.length ? cs.map(c => {
     const n = Math.max(1, c.fac), e = 100 * c.email / n, p = 100 * Math.max(0, c.phone - c.email) / n, o = 100 * Math.max(0, c.contact - Math.max(c.email, c.phone)) / n;
     const types = (c.office_types || []).map(x => OFFICE_NAMES[x] || x).join(', ');
-    return `<tr><td><a href="#directory" data-coll="${esc(c.c)}">${esc(c.c)}</a></td><td>${c.fac}</td><td>${c.email}</td><td>${c.phone}</td><td>${c.contact}</td><td>${c.profile}</td>
+    return `<tr><td><a href="#directory" data-coll="${esc(c.c)}" class="clamp l3" title="${esc(c.c)}">${esc(c.c)}</a></td><td>${c.fac}</td><td>${c.email}</td><td>${c.phone}</td><td>${c.contact}</td><td>${c.profile}</td>
       <td>${c.offices ? `<a href="#offices" data-ocoll="${esc(c.c)}">${c.offices}</a> <span class="muted">${esc(types)}</span>` : '0'}</td>
       <td><div class="cov" title="${Math.round(100 * c.contact / n)}% have some contact"><i class="e" style="width:${e}%"></i><i class="p" style="width:${p}%"></i><i class="o" style="width:${o}%"></i></div></td></tr>`;
   }).join('') + `<tr><td colspan="8" class="legend">Coverage:<b style="background:#1d7a3c"></b>own email<b style="background:#3f8fd6"></b>own phone<b style="background:#9bb7bd"></b>department / office contact only</td></tr>`
     : `<tr><td colspan="8" class="empty">Nothing saved yet. Start a run under <a href="#new">New run</a>.</td></tr>`;
   document.querySelectorAll('#d-coll a[data-coll]').forEach(a => a.onclick = () => { $('x-coll').dataset.want = a.dataset.coll; });
   document.querySelectorAll('#d-coll a[data-ocoll]').forEach(a => a.onclick = () => { $('o-coll').dataset.want = a.dataset.ocoll; });
-  if (r.ok) $('d-runs').innerHTML = r.data.runs.slice(0, 8).map(x => `<tr><td>${fmtTime(x.started)}</td><td>${esc(x.title)}</td><td>${stateCell(x.state)}</td><td>${x.faculty_saved}</td><td>${x.offices_saved}</td></tr>`).join('')
+  if (r.ok) $('d-runs').innerHTML = r.data.runs.slice(0, 8).map(x => `<tr><td class="nowrap">${timeCell(x.started)}</td><td>${clamp(x.title, 2)}</td><td>${stateCell(x.state)}</td><td>${x.faculty_saved}</td><td>${x.offices_saved}</td></tr>`).join('')
     || `<tr><td colspan="5" class="empty">No runs yet.</td></tr>`;
 }
 
@@ -65,9 +74,9 @@ async function loadRuns() {
     if (x.kind === 'prompt' && ['paused','stopped','interrupted','failed'].includes(x.state)) acts.push(`<button data-act="resume" data-id="${x.id}" data-kind="prompt">Resume</button>`);
     if (!live && x.kind === 'crawl') acts.push(`<button class="secondary" data-act="rerun" data-id="${x.id}">Run again</button>`);
     if (!live) acts.push(`<button class="secondary" data-act="del" data-id="${x.id}">${armed.has(x.id) ? 'Click again to delete' : 'Delete'}</button>`);
-    return `<tr><td>${fmtTime(x.started)}</td><td>${x.kind === 'prompt' ? 'Prompt' : x.kind === 'batch' ? 'College list' : 'One website'}</td><td>${esc(x.title)}</td>
-      <td>${stateCell(x.state)}${x.error ? `<div class="muted">${esc(x.error)}</div>` : ''}</td><td>${fmtDur(x.started, live ? null : x.finished)}</td>
-      <td>${x.faculty_saved}</td><td>${x.offices_saved}</td><td class="actions">${acts.join('')}</td></tr>`;
+    return `<tr><td class="nowrap">${timeCell(x.started)}</td><td class="nowrap">${x.kind === 'prompt' ? 'Prompt' : x.kind === 'batch' ? 'College list' : 'One website'}</td><td>${clamp(x.title, 3)}</td>
+      <td>${stateCell(x.state)}${x.error ? `<div class="muted clamp" title="${esc(x.error)}">${esc(x.error)}</div>` : ''}</td><td class="nowrap">${fmtDur(x.started, live ? null : x.finished)}</td>
+      <td>${x.faculty_saved}</td><td>${x.offices_saved}</td><td class="actions"><div class="btns">${acts.join('')}</div></td></tr>`;
   }).join('') || `<tr><td colspan="8" class="empty">No runs yet. Start one under <a href="#new">New run</a>.</td></tr>`;
 }
 $('r-rows').onclick = async e => {
@@ -117,9 +126,9 @@ async function loadDirectory() {
   $('x-count').textContent = `${j.total} ${j.total === 1 ? 'person' : 'people'}`;
   $('x-page').textContent = `Page ${j.page} of ${j.pages}`;
   $('x-prev').disabled = j.page <= 1; $('x-next').disabled = j.page >= j.pages;
-  $('x-rows').innerHTML = j.doctors.map(d => `<tr><td><b>${esc(d.name)}</b></td><td>${esc(d.designation)}</td><td>${esc(d.department)}</td>
-    <td class="contact">${esc(d.email)}</td><td class="contact">${esc(d.phone)}</td><td class="muted">${esc([d.contact_email, d.contact_phone].filter(Boolean).join('; '))}</td>
-    <td>${esc(d.source_institution || d.institution)}</td><td>${esc(list(d.qualifications))}</td><td>${esc(list(d.research_areas))}</td>
+  $('x-rows').innerHTML = j.doctors.map(d => `<tr><td>${clamp(d.name)}</td><td>${clamp(d.designation)}</td><td>${clamp(d.department)}</td>
+    <td class="contact">${clamp(d.email, 2)}</td><td class="contact">${clamp(d.phone, 1)}</td><td class="muted">${clamp([d.contact_email, d.contact_phone].filter(Boolean).join('; '))}</td>
+    <td>${clamp(d.source_institution || d.institution)}</td><td>${clamp(d.qualifications)}</td><td>${clamp(d.research_areas)}</td>
     <td>${d.google_scholar ? `<a href="${esc(safeUrl(d.google_scholar))}" target="_blank" rel="noopener">Scholar</a>` : ''}${d.orcid ? ` ORCID ${esc(d.orcid)}` : ''}</td>
     <td><a href="${esc(safeUrl(d.profile_url || d.source_url))}" target="_blank" rel="noopener">open</a></td></tr>`).join('')
     || `<tr><td colspan="11" class="empty">${j.total ? '' : 'Nobody matches. Clear the filters or run a crawl first.'}</td></tr>`;
@@ -155,9 +164,9 @@ async function loadOffices() {
   fillSelect($('o-type'), j.facets.office_types, 'All types', OFFICE_NAMES);
   $('o-count').textContent = `${j.total} office${j.total === 1 ? '' : 's'}`;
   $('o-rows').innerHTML = j.offices.map(o => `<tr><td><span class="pill">${esc(OFFICE_NAMES[o.office_type] || o.office_type)}</span></td>
-    <td><b>${esc(o.office_name)}</b></td><td>${esc(o.college || o.source_institution || o.institution)}</td>
-    <td class="contact">${esc(list(o.emails))}</td><td class="contact">${esc(list(o.phones))}</td>
-    <td>${esc((o.coordinators || []).join('; '))}</td><td class="muted">${esc((o.higher_studies_lines || []).join(' | '))}</td>
+    <td>${clamp(o.office_name)}</td><td>${clamp(o.college || o.source_institution || o.institution)}</td>
+    <td class="contact">${clamp(o.emails, 2)}</td><td class="contact">${clamp(o.phones, 2)}</td>
+    <td>${clamp((o.coordinators || []).join('; '))}</td><td class="muted">${clamp((o.higher_studies_lines || []).join(' | '))}</td>
     <td><a href="${esc(safeUrl(o.page_url))}" target="_blank" rel="noopener">open</a></td></tr>`).join('')
     || `<tr><td colspan="8" class="empty">No student offices match. Clear the filters or run a crawl first.</td></tr>`;
 }

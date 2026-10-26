@@ -24,23 +24,35 @@ button:disabled { opacity:.5; cursor:not-allowed; }
 .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:14px; }
 .hint { color:var(--muted); font-size:13px; margin:6px 0 0; }
 .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }
-.stat { background:var(--bg); border-radius:8px; padding:10px 12px; } .stat b { display:block; font-size:22px; }
+.stats { grid-auto-rows:1fr; }
+.stat { background:var(--bg); border-radius:8px; padding:10px 12px; display:flex; flex-direction:column; justify-content:space-between; gap:4px; }
+.stat b { display:block; font-size:22px; line-height:1.2; } .stat b small { font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap; }
 .stat span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
 .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin:12px 0; } .bar i { display:block; height:100%; background:var(--accent); width:0; transition:width .4s; }
 .log { font:12px/1.5 ui-monospace,Consolas,monospace; max-height:220px; overflow:auto; background:#0f1d22; color:#cfe3e6; border-radius:8px; padding:10px; white-space:pre; }
 .log .x { color:#ff9b8f; } .log .p { color:#8fe3a5; } .log .l { color:#9cc8ff; }
 table { width:100%; border-collapse:collapse; font-size:13px; }
-th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { background:var(--bg); position:sticky; top:0; }
+th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; overflow-wrap:anywhere; }
+th { background:var(--bg); position:sticky; top:0; overflow-wrap:normal; word-break:keep-all; }
+/* Column widths are set per table, so one long research area or address cannot
+   stretch a column off the screen and leave the rest empty. */
+.tablewrap table { table-layout:fixed; }
+th.nowrap, td.nowrap { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.clamp { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; }
+.clamp.l3 { -webkit-line-clamp:3; line-clamp:3; }
+.clamp.l1 { -webkit-line-clamp:1; line-clamp:1; }
 .tablewrap { max-height:560px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
 .tablewrap.sites { max-height:620px; overflow-y:scroll; }
 th { z-index:1; }
-td.contact { white-space:nowrap; font-weight:600; } td.muted { color:var(--muted); font-size:12px; }
+td.contact { font-weight:600; }
+.sub { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; color:var(--muted); font-size:12px; }
+table.people td:first-child .clamp, table.offices td:nth-child(2) .clamp { font-weight:700; } td.muted { color:var(--muted); font-size:12px; }
 .ok { color:var(--ok); } .warn { color:#9a6700; } .bad { color:var(--bad); }
-.pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; background:#e3efef; color:var(--accent-2); }
+.pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; background:#e3efef; color:var(--accent-2); white-space:nowrap; }
 .state { font-weight:700; } .state.failed { color:var(--bad); } .state.done { color:var(--ok); } .state.paused { color:#9a6700; }
 pre.json { background:var(--bg); padding:12px; border-radius:8px; overflow:auto; max-height:420px; font-size:12px; }
 a { color:var(--accent); }
+td a { overflow-wrap:normal; word-break:normal; }
 @media (prefers-color-scheme: dark) {
   :root { --ink:#e3ecee; --muted:#9db0b5; --line:#2c3a3f; --bg:#12191c; --card:#1a2327; }
   textarea, input, select { background:#11181b; color:var(--ink); border-color:#33454b; }
@@ -54,11 +66,16 @@ nav a:hover { background:rgba(255,255,255,.1); } nav a.on { background:#fff; col
 .cov { display:flex; height:10px; border-radius:5px; overflow:hidden; background:var(--line); min-width:80px; }
 .cov i { display:block; height:100%; } .cov .e { background:#1d7a3c; } .cov .p { background:#3f8fd6; } .cov .o { background:#9bb7bd; }
 .legend { font-size:12px; color:var(--muted); } .legend b { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 4px 0 10px; vertical-align:-1px; }
-.actions button { padding:5px 10px; font-size:13px; margin:0 4px 4px 0; }
+.actions { white-space:nowrap; }
+.actions .btns { display:flex; flex-wrap:wrap; gap:6px; }
+.actions button { padding:5px 10px; font-size:13px; margin:0; white-space:nowrap; }
 .view[hidden] { display:none; }
 .row.checks { gap:22px; } .row.checks .check { margin-top:0; }
+.grid > .check { margin-top:0; align-self:end; padding:9px 0; }
 .page { grid-template-columns:minmax(0,1fr); } .card { min-width:0; }
 .tablewrap table { min-width:720px; }
+table.people { min-width:1180px; } table.offices { min-width:1060px; } table.runs { min-width:980px; }
+table.sites { min-width:1020px; } table.colleges { min-width:900px; }
 .msg { margin:8px 0 0; font-size:13px; min-height:0; } .msg:empty { display:none; }
 .msg.bad { color:var(--bad); font-weight:600; } .msg.ok { color:var(--ok); } .msg.info { color:var(--muted); }
 .source-label { font-weight:400; color:var(--muted); font-size:13px; margin-left:6px; }
@@ -72,6 +89,8 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
 .prompt-sources { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:12px; margin-top:12px; }
 .prompt-source { border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
 .prompt-source a { overflow-wrap:anywhere; } .prompt-source p { margin:4px 0; }
+#p-status, #p-work, #p-usage { overflow-wrap:anywhere; }
+#p-status { font-weight:600; }
 .prompt-source ul { margin:6px 0; padding-left:20px; }
 @media (prefers-color-scheme: dark) {
   button.secondary { color:#7fd8d2; border-color:#3d9c97; } :root { --ok:#5cc985; --bad:#ff8a80; }
@@ -91,12 +110,12 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
 </section>
 <section class="card">
   <h2>Faculty and offices by college</h2>
-  <div class="tablewrap"><table><thead><tr><th>College</th><th>Faculty</th><th>With own email</th><th>With own phone</th><th>With any contact</th><th>With Scholar / ORCID</th><th>Student offices</th><th style="width:22%">Contact coverage</th></tr></thead>
+  <div class="tablewrap"><table class="colleges"><colgroup><col style="width:26%"><col style="width:8%"><col style="width:10%"><col style="width:10%"><col style="width:10%"><col style="width:11%"><col style="width:13%"><col style="width:12%"></colgroup><thead><tr><th>College</th><th>Faculty</th><th>With own email</th><th>With own phone</th><th>With any contact</th><th>With Scholar / ORCID</th><th>Student offices</th><th>Contact coverage</th></tr></thead>
   <tbody id="d-coll"></tbody></table></div>
 </section>
 <section class="card">
   <h2>Recent runs</h2>
-  <div class="tablewrap"><table><thead><tr><th>Started</th><th>Run</th><th>Status</th><th>Faculty</th><th>Offices</th></tr></thead><tbody id="d-runs"></tbody></table></div>
+  <div class="tablewrap"><table class="runs"><colgroup><col style="width:16%"><col><col style="width:18%"><col style="width:9%"><col style="width:9%"></colgroup><thead><tr><th class="nowrap">Started</th><th>Run</th><th>Status</th><th>Faculty</th><th>Offices</th></tr></thead><tbody id="d-runs"></tbody></table></div>
 </section>
 </div>
 
@@ -105,7 +124,7 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
   <h2>All runs</h2>
   <p class="hint" style="margin-top:0">Every crawl and batch is kept here. A batch cut off when the app closed can be resumed; finished colleges are not crawled again.</p>
   <p class="msg" id="r-msg" role="status"></p>
-  <div class="tablewrap"><table><thead><tr><th>Started</th><th>Type</th><th>Run</th><th>Status</th><th>Duration</th><th>Faculty</th><th>Offices</th><th>Actions</th></tr></thead><tbody id="r-rows"></tbody></table></div>
+  <div class="tablewrap"><table class="runs"><colgroup><col style="width:13%"><col style="width:8%"><col style="width:24%"><col style="width:15%"><col style="width:7%"><col style="width:6%"><col style="width:6%"><col style="width:21%"></colgroup><thead><tr><th class="nowrap">Started</th><th>Type</th><th>Run</th><th>Status</th><th>Duration</th><th>Faculty</th><th>Offices</th><th>Actions</th></tr></thead><tbody id="r-rows"></tbody></table></div>
 </section>
 </div>
 
@@ -128,7 +147,7 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
   <div class="row"><button type="button" id="x-xlsx">Export Excel</button><button type="button" class="secondary" id="x-csv">CSV</button>
     <button type="button" class="secondary" id="x-reset">Clear filters</button><span class="hint">Exports use the filters above.</span></div>
   <p class="msg" id="x-msg" role="status"></p>
-  <div class="tablewrap" style="margin-top:10px"><table>
+  <div class="tablewrap" style="margin-top:10px"><table class="people"><colgroup><col style="width:13%"><col style="width:10%"><col style="width:9%"><col style="width:12%"><col style="width:8%"><col style="width:9%"><col style="width:10%"><col style="width:8%"><col style="width:9%"><col style="width:6%"><col style="width:5%"></colgroup>
     <thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Email</th><th>Phone</th><th>Department / office contact</th><th>College</th><th>Qualifications</th><th>Research areas</th><th>Profiles</th><th>Source</th></tr></thead>
     <tbody id="x-rows"></tbody></table></div>
   <div class="row"><button type="button" class="secondary" id="x-prev">Previous</button><span class="hint" id="x-page"></span><button type="button" class="secondary" id="x-next">Next</button></div>
@@ -152,7 +171,7 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
   <div class="row"><button type="button" id="o-xlsx">Export Excel</button><button type="button" class="secondary" id="o-csv">CSV</button>
     <button type="button" class="secondary" id="o-reset">Clear filters</button></div>
   <p class="msg" id="o-msg" role="status"></p>
-  <div class="tablewrap" style="margin-top:10px"><table>
+  <div class="tablewrap" style="margin-top:10px"><table class="offices"><colgroup><col style="width:10%"><col style="width:17%"><col style="width:15%"><col style="width:16%"><col style="width:13%"><col style="width:13%"><col style="width:11%"><col style="width:5%"></colgroup>
     <thead><tr><th>Type</th><th>Office / body</th><th>College</th><th>Emails</th><th>Phones</th><th>Coordinators</th><th>Higher-studies figures</th><th>Page</th></tr></thead>
     <tbody id="o-rows"></tbody></table></div>
 </section>
@@ -212,7 +231,7 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
     <div><label for="b-pages">Pages per college</label><input id="b-pages" type="number" value="150" min="1" max="5000"></div>
     <div><label for="b-at-once">Colleges at once</label><input id="b-at-once" type="number" value="3" min="1" max="8"></div>
     <div><label for="b-delay">Delay between requests (s)</label><input id="b-delay" type="number" value="1.5" step="0.5" min="0"></div>
-    <div><label for="b-render">JavaScript / firewalled sites</label><select id="b-render"><option value="auto">Auto browser</option><option value="never">Never</option><option value="always">Always browser</option></select></div>
+    <div><label for="b-render">JavaScript / firewalled sites</label><select id="b-render"><option value="auto">Auto browser</option><option value="never">Plain HTTP only</option><option value="always">Always browser</option></select></div>
     <div><label for="b-departments">Departments (blank = all)</label><input id="b-departments" placeholder="CSE, IT, ECE"></div>
     <label class="check"><input type="checkbox" id="b-offices" checked> Student offices</label>
     <label class="check"><input type="checkbox" id="b-all"> CSV: everyone</label>
@@ -232,7 +251,7 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
     <p class="hint" id="b-remaining"></p>
     <p class="hint">Colleges stay in upload order. Hover over the number to see the spreadsheet row.
     Finished means the configured crawl ended; it does not guarantee every faculty member was found.</p>
-    <div class="tablewrap sites" id="b-wrap" style="margin-top:10px"><table>
+    <div class="tablewrap sites" id="b-wrap" style="margin-top:10px"><table class="sites"><colgroup><col style="width:4%"><col style="width:20%"><col style="width:9%"><col style="width:6%"><col style="width:8%"><col style="width:9%"><col style="width:9%"><col style="width:9%"><col style="width:9%"><col style="width:17%"></colgroup>
       <thead><tr><th>#</th><th>College</th><th>Status</th><th>Pages</th><th>Faculty</th><th>Student offices</th><th>With own phone</th><th>With own email</th><th>With any contact</th><th>Note</th></tr></thead>
       <tbody id="b-sites"></tbody></table></div>
     <div class="row" id="b-dl" hidden><button type="button" id="b-dl-btn">Download combined Excel</button>
@@ -248,7 +267,7 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
     <div><label for="max_pages">Max pages</label><input id="max_pages" type="number" value="200" min="1" max="5000"></div>
     <div><label for="depth">Max link depth</label><input id="depth" type="number" value="4" min="0" max="10"></div>
     <div><label for="delay">Delay between requests (s)</label><input id="delay" type="number" value="1.5" step="0.5" min="0"></div>
-    <div><label for="render">JavaScript pages</label><select id="render"><option value="auto">Auto (if Playwright installed)</option><option value="never">Never render</option><option value="always">Always render</option></select></div>
+    <div><label for="render">JavaScript pages</label><select id="render"><option value="auto">Auto browser</option><option value="never">Plain HTTP only</option><option value="always">Always browser</option></select></div>
     <div><label for="departments">Departments (blank = all)</label><input id="departments" placeholder="CSE, IT, ECE"></div>
     <label class="check"><input type="checkbox" id="offices" checked> Student offices</label>
     <label class="check"><input type="checkbox" id="all"> CSV: everyone</label>
@@ -284,12 +303,12 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
 <section class="card" id="results-card" hidden>
   <h2>Results <span class="pill" id="count"></span><span class="source-label" id="results-from"></span></h2>
   <input id="filter" placeholder="Filter by name, college, department or research area">
-  <div class="tablewrap" style="margin-top:10px"><table>
+  <div class="tablewrap" style="margin-top:10px"><table class="people"><colgroup><col style="width:13%"><col style="width:10%"><col style="width:9%"><col style="width:12%"><col style="width:8%"><col style="width:9%"><col style="width:10%"><col style="width:8%"><col style="width:9%"><col style="width:6%"><col style="width:5%"></colgroup>
     <thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Email</th><th>Phone</th><th>Department / office contact</th><th>College</th><th>Qualifications</th><th>Research areas</th><th>Profiles</th><th>Source</th></tr></thead>
     <tbody id="rows"></tbody></table></div>
   <h2 style="margin-top:18px">Student offices <span class="pill" id="office-count"></span></h2>
   <p class="hint" style="margin-top:0">Office contacts and faculty/staff coordinators. Lines about individual students are left out; the last column counts them.</p>
-  <div class="tablewrap" style="margin-top:8px;max-height:380px"><table>
+  <div class="tablewrap" style="margin-top:8px;max-height:380px"><table class="offices"><colgroup><col style="width:11%"><col style="width:20%"><col style="width:18%"><col style="width:14%"><col style="width:14%"><col style="width:12%"><col style="width:6%"><col style="width:5%"></colgroup>
     <thead><tr><th>Type</th><th>Office / body</th><th>Emails</th><th>Phones</th><th>Coordinators</th><th>Higher-studies figures</th><th>Student lines left out</th><th>Page</th></tr></thead>
     <tbody id="office-rows"></tbody></table></div>
 </section>

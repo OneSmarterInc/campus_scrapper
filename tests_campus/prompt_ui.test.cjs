@@ -165,3 +165,35 @@ test('failed discovery explicitly says no results and labels evidence as diagnos
     assert.equal(p.$('p-download').hidden,true);
   } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
 });
+
+// ---- layout rules the tables depend on ------------------------------------------
+test('every table states a width for each of its columns', async () => {
+  const html = fs.readFileSync(path.join(root, 'campusscraper/static/index.html'), 'utf8');
+  const dom = new JSDOM(html);
+  const tables = [...dom.window.document.querySelectorAll('.tablewrap table')];
+  assert.ok(tables.length >= 6, 'the portal still has its tables');
+  for (const t of tables) {
+    const heads = t.querySelectorAll('thead th').length;
+    const cols = t.querySelectorAll('colgroup col').length;
+    const first = t.querySelector('thead th').textContent.trim();
+    assert.equal(cols, heads, `table starting "${first}" has ${heads} headers but ${cols} column widths`);
+  }
+});
+
+test('run states are shown as words, and long text is clamped with the full value kept', async () => {
+  const long = 'Find 20 engineering colleges in Mumbai and return their official faculty directory URLs';
+  const p = portal(saved());
+  try {
+    await p.w.testPrompt.open('run1');
+    const row = p.w.eval(`(() => {
+      const x = {id:'r1', kind:'prompt', state:'sources_ready', title:${JSON.stringify(long)},
+                 started: Date.now()/1000, finished: Date.now()/1000, faculty_saved:0, offices_saved:0, error:''};
+      return stateCell(x.state) + clamp(x.title, 3);
+    })()`);
+    assert.ok(row.includes('Source URLs ready'), 'the state reads as words: ' + row);
+    assert.ok(!row.includes('sources_ready'), 'the code word is not shown');
+    assert.ok(row.includes('class="clamp l3"'), 'long titles are clamped');
+    assert.ok(row.includes(`title="${long}"`), 'the whole title stays in the tooltip');
+    await new Promise(r => setTimeout(r, 50));
+  } finally { p.dom.window.close(); }
+});

@@ -3,6 +3,12 @@ const $ = id => document.getElementById(id);
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function list(v) { return Array.isArray(v) ? v.join(', ') : (v ?? ''); }
 function safeUrl(u) { return /^https?:\/\//i.test(u || '') ? u : '#'; }
+// Long text keeps its row the same height as every other row; the whole value
+// stays in the tooltip and in the exported file.
+function clamp(v, lines = 2) {
+  const text = list(v);
+  return text ? `<div class="clamp${lines === 1 ? ' l1' : lines >= 3 ? ' l3' : ''}" title="${esc(text)}">${esc(text)}</div>` : '';
+}
 function say(el, text, kind = 'info') { el.textContent = text || ''; el.className = 'msg ' + kind; }
 
 const FIELD_NAMES = { urls: 'Start URL', max_pages: 'Max pages', max_depth: 'Max link depth', delay_seconds: 'Delay',
@@ -72,11 +78,11 @@ function render() {
     $('rows').innerHTML = `<tr><td colspan="11" class="empty">${rows.length ? 'Nobody matches this filter.' : 'No faculty found yet.'}</td></tr>`;
     return;
   }
-  $('rows').innerHTML = shown.map(d => `<tr><td><b>${esc(d.name)}</b>${d.page_type === 'profile' ? '' : ' <span class="pill">card</span>'}</td>
-    <td>${esc(d.designation)}</td><td>${esc(d.department)}</td>
-    <td class="contact">${esc(d.email)}</td><td class="contact">${esc(d.phone)}</td>
-    <td class="muted">${esc([d.contact_email, d.contact_phone].filter(Boolean).join('; '))}</td>
-    <td>${esc(d.institution || d.source_institution)}</td><td>${esc(list(d.qualifications))}</td><td>${esc(list(d.research_areas))}</td>
+  $('rows').innerHTML = shown.map(d => `<tr><td>${clamp(d.name)}${d.page_type === 'profile' ? '' : '<span class="pill">card</span>'}</td>
+    <td>${clamp(d.designation)}</td><td>${clamp(d.department)}</td>
+    <td class="contact">${clamp(d.email, 2)}</td><td class="contact">${clamp(d.phone, 1)}</td>
+    <td class="muted">${clamp([d.contact_email, d.contact_phone].filter(Boolean).join('; '))}</td>
+    <td>${clamp(d.institution || d.source_institution)}</td><td>${clamp(d.qualifications)}</td><td>${clamp(d.research_areas)}</td>
     <td>${d.google_scholar ? `<a href="${esc(safeUrl(d.google_scholar))}" target="_blank" rel="noopener">Scholar</a>` : ''}${d.orcid ? ` ORCID ${esc(d.orcid)}` : ''}</td>
     <td><a href="${esc(safeUrl(d.profile_url || d.source_url))}" target="_blank" rel="noopener">open</a></td></tr>`).join('');
 }
@@ -86,9 +92,9 @@ function renderOffices(q) {
   const shown = offices.filter(o => !q || JSON.stringify(o).toLowerCase().includes(q));
   $('office-count').textContent = `${shown.length} office${shown.length === 1 ? '' : 's'}`;
   $('office-rows').innerHTML = shown.length ? shown.map(o => `<tr><td><span class="pill">${esc(OFFICE_NAMES[o.office_type] || o.office_type)}</span></td>
-    <td><b>${esc(o.office_name)}</b><br><span class="muted">${esc(o.source_institution || o.institution)}</span></td>
-    <td class="contact">${esc(list(o.emails))}</td><td class="contact">${esc(list(o.phones))}</td>
-    <td>${esc((o.coordinators || []).join('; '))}</td><td class="muted">${esc((o.higher_studies_lines || []).join(' | '))}</td>
+    <td>${clamp(o.office_name)}<span class="sub">${esc(o.source_institution || o.institution)}</span></td>
+    <td class="contact">${clamp(o.emails, 2)}</td><td class="contact">${clamp(o.phones, 2)}</td>
+    <td>${clamp((o.coordinators || []).join('; '))}</td><td class="muted">${clamp((o.higher_studies_lines || []).join(' | '))}</td>
     <td class="muted">${o.skipped_student_lines || ''}</td>
     <td><a href="${esc(safeUrl(o.page_url))}" target="_blank" rel="noopener">open</a></td></tr>`).join('')
     : `<tr><td colspan="8" class="empty">No student offices found yet.</td></tr>`;
@@ -300,10 +306,10 @@ async function pollBatch() {
     const active = s.status === 'crawling';
     const status = s.status === 'done' && s.note ? 'Finished — see note' : labels[s.status] || s.status;
     return `<tr${active ? ' style="background:var(--bg);font-weight:600"' : ''}><td title="Spreadsheet row ${s.row}">${s.sequence}</td>
-      <td>${esc(s.institution)}</td><td class="${['error', 'failed', 'interrupted'].includes(s.status) ? 'bad' : ['done', 'resumed'].includes(s.status) ? 'ok' : 'muted'}">${esc(status)}</td>
+      <td>${clamp(s.institution, 2)}</td><td class="${['error', 'failed', 'interrupted'].includes(s.status) ? 'bad' : ['done', 'resumed'].includes(s.status) ? 'ok' : 'muted'}">${esc(status)}</td>
       <td>${s.pages}${active ? ' / ' + s.page_limit + ' max' : ''}</td><td>${s.faculty}</td><td>${s.offices}</td>
       <td>${s.with_phone ?? '—'}</td><td>${s.with_email ?? '—'}</td><td>${s.with_any_contact ?? '—'}</td>
-      <td class="muted">${esc(active ? s.queued + ' discovered pages waiting; more may be found.' : s.note)}</td></tr>`;
+      <td class="muted">${clamp(active ? s.queued + ' discovered pages waiting; more may be found.' : s.note, 3)}</td></tr>`;
   }).join('');
   wrap.scrollTop = keep;
   if (resultsFrom === 'the college list batch' && (++batchPolls % 3 === 0)) loadBatchDoctors();  // refresh shown doctors

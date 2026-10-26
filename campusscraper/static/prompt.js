@@ -58,7 +58,7 @@ async function pollPrompt(id) {
   const j = promptJob = r.data, report = j.report || {}, p = j.progress || {}, plan = report.plan || {};
   if (j.state === 'failed') say($('p-msg'), (report.candidates || []).length ? 'Run stopped. Verified source URLs are available below; contact extraction may be incomplete.' : 'Run stopped. No verified faculty URLs or contacts were produced. The evidence report is a diagnostic log.', 'bad');
   else if (j.state !== 'queued') say($('p-msg'), '');
-  $('p-status').textContent = `${promptLabels[j.state] || j.state} · ${j.body.prompt}`;
+  $('p-status').innerHTML = `<b>${esc(promptLabels[j.state] || j.state)}</b> <span class="clamp" title="${esc(j.body.prompt)}">${esc(j.body.prompt)}</span>`;
   const active = promptActive.has(j.state);
   $('p-start').disabled = active;
   $('p-pause').disabled = !['queued','running','waiting'].includes(j.state);
@@ -79,7 +79,7 @@ async function pollPrompt(id) {
   else if (j.state === 'failed') work = j.error || 'Check setup, then resume this saved run.';
   else if (j.state === 'sources_ready') work = `${institutes.size}${plan.requested_institutions ? ' of ' + plan.requested_institutions + ' requested' : ''} colleges have verified source pages below. Download source URLs to save them. Contact scraping was not requested.${plan.requested_institutions > institutes.size ? ' The requested college count was not reached; see coverage notes.' : ''}`;
   else if (j.state === 'no_candidates') work = 'Search finished without verified faculty sources. No results file was produced. See coverage notes for search or access failures.';
-  else if (j.phase === 'scraping') work = `${p.completed || 0} of ${p.total || j.rows.length} college crawls ended. Filtering and export follow; the overall run is still in progress.`;
+  else if (j.phase === 'scraping') work = `${p.completed || 0} of ${p.total || (j.rows || []).length} college crawls ended. Filtering and export follow; the overall run is still in progress.`;
   else if (j.phase === 'filtering') work = `Checking extracted records against your criteria: ${p.checked || 0}/${p.total || '…'}; ${p.matched || 0} matched so far.`;
   else if (j.phase === 'finished') work = `${j.stats.people_found || 0} matching people (${j.stats.faculty || 0} faculty) and ${j.stats.student_offices || 0} offices saved across ${j.stats.colleges_with_matching_records || 0} colleges. ${j.stats.filtered_out || 0} extracted records did not meet the prompt’s criteria.`;
   else if (j.phase === 'exporting') work = 'Writing the Excel file. The run will finish when the file is ready.';
@@ -100,7 +100,7 @@ async function pollPrompt(id) {
     groups.get(c.institution).push(c);
   }
   $('p-sources').innerHTML = [...groups].map(([name, cs], idx) => {
-    const row = j.rows.find(x => x.institution === name);
+    const row = (j.rows || []).find(x => x.institution === name);
     const state = row ? `${row.status === 'done' || row.status === 'resumed' ? 'Crawl ended' : row.status} · ${row.pages} pages · ${row.faculty} extracted faculty before filtering` : 'Source pages found';
     return `<article class="prompt-source"><b>${idx+1}. ${esc(name)}</b><p class="hint">${esc(state)}</p><ul>${cs.map(c => `<li><a href="${esc(safeUrl(c.url))}" target="_blank" rel="noopener">${esc(c.url)}</a>${typeof c.extracted_staff === 'number' ? ` <span class="hint">· ${c.extracted_staff} staff read from this page</span>` : ''}</li>`).join('')}</ul>${row?.note ? `<p class="hint">${esc(row.note)}</p>` : ''}</article>`;
   }).join('');
