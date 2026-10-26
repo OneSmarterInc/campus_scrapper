@@ -57,12 +57,36 @@ The presence of an output word such as 'emails' alone is not a requirement that
 every person must publish an email; 'only people with email' is such a requirement.
 Do not omit any exclusion or assume that institution count means people count.
 Do not mark a request unsupported just because it lacks a city or a number.
+Each prompt_quote must be a CONTIGUOUS substring copied from original_prompt,
+not a paraphrase, translation, combined fragments or a quotation of these rules.
+For 'engineering colleges in Pune', quote 'engineering colleges' for institution
+type and 'Pune' for location.
+Keep counts in the requested_* fields, not eligibility criteria: a single college
+page cannot prove how many colleges the user requested. Keep output instructions
+(directory URLs, Excel, contact fields) in objective, not eligibility criteria.
+Use target for generic faculty/staff/office scope. Do not add our built-in
+no-students/official-sources rules as user criteria unless the user stated them;
+these rules are enforced independently. Never drop a user-stated exclusion.
+"""
+
+PLAN_REPAIR = """
+The previous proposal failed prompt-quote validation. Correct the COMPLETE plan
+against original_prompt, using the supplied grounding_errors as feedback.
+Copy each quote literally from the original. Preserve all user requirements,
+negations, count types and target. Do not weaken a requirement just to pass the
+check. Remove an invented condition only when the user never requested it; do
+not replace it with an arbitrary matching quote. Built-in service policy remains
+in force without being a user criterion. If user context is genuinely missing,
+return clarify with a specific question. Return only the requested JSON.
 """
 
 REVIEW_INSTRUCTION = """Audit this proposed plan against the ORIGINAL request.
 Check that every requirement and exclusion is represented, count types and target
-are correct, and no constraint or assumed location was invented. Only campus
-faculty/staff and student-facing office contacts are supported. Individual student
+are correct, and no constraint or assumed location was invented.
+Counts and requested output fields/format must not become per-page or per-person
+eligibility criteria. Quotes must support their associated requirement, not just
+appear somewhere in the prompt. Built-in service rules need not be user criteria.
+Only campus faculty/staff and student-facing office contacts are supported. Individual student
 data, including student coordinators, are never supported. An ambiguous or
 incomplete plan needs clarification, not silent broadening. Return outcome ok
 only if the plan preserves the request. For unsupported scope return unsupported.
@@ -98,6 +122,29 @@ If a prompt specifies a department or research area, assess this record itself.
 
 def group_key(url, institution):
     return (urlsplit(url).netloc.removeprefix("www."), re.sub(r"\W+", "", institution.casefold()))
+
+
+def ground_plan_quotes(plan, prompt):
+    """Restore literal spans for case/whitespace variations; never fuzzy-match.
+
+    Wording, punctuation and negations must survive. Semantic fidelity is still
+    checked by PlanReview; a substring match alone does not establish meaning.
+    """
+    grounded = plan.model_copy(deep=True)
+    errors = []
+    for criterion in grounded.criteria:
+        quote = criterion.prompt_quote
+        if quote.strip() and quote in prompt:
+            continue
+        tokens = quote.split()
+        match = re.search(r"\s+".join(re.escape(t) for t in tokens), prompt, re.I) if tokens else None
+        if match:
+            criterion.prompt_quote = match.group(0)
+        else:
+            errors.append({"criterion_id": criterion.id, "requirement": criterion.requirement,
+                           "prompt_quote": quote,
+                           "error": "Quote is not a contiguous span of the original prompt"})
+    return grounded, errors
 
 
 def page_content(page, allow_local=False):
@@ -156,12 +203,29 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
     def ask(schema, instruction, payload):
         control()
         report.model_calls += 1
+        if schema in (Plan, PlanReview):
+            emit("planning", current="Checking the search plan" if schema is PlanReview else "Interpreting the request")
         return model.ask(schema, instruction, payload)
 
     emit("planning")
-    plan = ask(Plan, PLAN_INSTRUCTION + PLAN_EXTRA, {"original_prompt": prompt})
-    if any(c.prompt_quote not in prompt for c in plan.criteria):
-        raise ConfigurationError("The interpreted requirements were not grounded in your prompt. Rephrase and try again")
+    instruction = PLAN_INSTRUCTION + PLAN_EXTRA
+    payload = {"original_prompt": prompt}
+    for attempt in range(2):  # One repair only; quota waits reuse the journal.
+        proposed = ask(Plan, instruction, payload)
+        plan, errors = ground_plan_quotes(proposed, prompt)
+        report.planning_attempts.append({"attempt": attempt + 1,
+            "proposed_plan": proposed.model_dump(), "grounding_errors": errors})
+        if not errors:
+            break
+        if attempt == 1:
+            report.status = "planning_failed"
+            report.issues.append("The AI search plan could not be validated after one automatic repair. "
+                                 "No searches were run. The evidence report contains the rejected criteria.")
+            emit("planning_failed")
+            raise ConfigurationError(report.issues[-1])
+        emit("planning", current="Correcting the AI search plan before searching")
+        instruction = PLAN_INSTRUCTION + PLAN_EXTRA + PLAN_REPAIR
+        payload = {"original_prompt": prompt, "previous_plan": proposed.model_dump(), "grounding_errors": errors}
     report.plan = plan.model_dump()
     if plan.action != "search":
         report.status = plan.action

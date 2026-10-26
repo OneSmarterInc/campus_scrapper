@@ -861,7 +861,8 @@ def prompt_evidence(job_id: str):
     import json
     manager = prompt_manager()
     job = manager.db.get(job_id) or _missing("prompt run")
-    return Response(json.dumps({"report": job["report"], "filter_decisions": manager.db.cached(job_id, "filter_audit") or [],
+    return Response(json.dumps({"job": {key: job.get(key) for key in ("id", "state", "phase", "error", "retry_at")},
+                                "report": job["report"], "filter_decisions": manager.db.cached(job_id, "filter_audit") or [],
                                 "usage": manager.db.stats(job_id) or job.get("usage", [])}, ensure_ascii=False), media_type="application/json",
                     headers={"Content-Disposition": f'attachment; filename="prompt-{job_id}-evidence.json"'})
 

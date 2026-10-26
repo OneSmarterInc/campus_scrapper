@@ -186,7 +186,12 @@ def workflow(tmp_path, monkeypatch, site_url):
         payload = json.loads(body["messages"][1]["content"])
         model_calls.append(name)
         if name == "Plan":
+            if payload.get("previous_plan") and state.get("fail_repair_once") and not state["failed"]:
+                state["failed"] = True
+                return httpx.Response(429, headers={"retry-after": "120"})
             data = plan(requested_institutions=1, criteria=[dict(id="topic", requirement="Researches machine learning", prompt_quote="machine learning", applies_to="person")]).model_dump()
+            if state.get("plan_quotes"):
+                data["criteria"][0]["prompt_quote"] = state["plan_quotes"].pop(0)
         elif name == "PlanReview":
             data = REVIEW.model_dump()
         elif name == "Decision":
@@ -230,6 +235,60 @@ def test_complete_prompt_to_excel_and_history(workflow):
     assert searches and calls[:3] == ["Plan", "PlanReview", "Decision"]
     assert saved["stats"]["filtered_out"] > 0
     wb.close()
+
+
+def test_repaired_prompt_completes_real_crawl_filtering_and_excel(workflow):
+    manager, searches, calls, state = workflow
+    state["plan_quotes"] = ["research in machine learning", "machine learning"]
+    job = manager.create(PromptIn(prompt="Find faculty researching machine learning", render="never", pages_per_college=60), start=False)
+    manager.execute(job["id"])
+    saved = manager.db.get(job["id"])
+    assert saved["state"] in {"done", "partial"}, saved
+    assert calls[:4] == ["Plan", "Plan", "PlanReview", "Decision"]
+    assert len(saved["report"]["planning_attempts"]) == 2 and searches
+    wb = load_workbook(saved["xlsx"], read_only=True, data_only=True)
+    data = json.dumps(list(wb["Faculty"].values))
+    assert "anitha.rao@sunrise-it.ac.in" in data
+    assert "srinivas.k@" not in data and "rahul.v21" not in data
+    wb.close()
+
+
+def test_failed_planning_export_includes_failure_and_rejected_criteria(workflow, monkeypatch):
+    import campusscraper.web as web
+    manager, searches, calls, state = workflow
+    state["plan_quotes"] = ["unsupported model paraphrase", "unsupported model paraphrase"]
+    monkeypatch.setattr(web, "_PROMPT_MANAGER", manager)
+    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never"), start=False)
+    manager.execute(job["id"])
+    client = TestClient(web.app)
+    exported = client.get(f"/api/discovery/{job['id']}/evidence.json")
+    data = exported.json()
+    assert data["job"]["state"] == "failed"
+    assert data["job"]["phase"] == data["report"]["status"] == "planning_failed"
+    assert "automatic repair" in data["job"]["error"]
+    assert data["report"]["model_calls"] == 2
+    assert len(data["report"]["planning_attempts"]) == 2
+    assert data["report"]["planning_attempts"][0]["grounding_errors"]
+    assert "fixture-key" not in exported.text
+    assert not searches and calls == ["Plan", "Plan"]
+    assert client.get(f"/api/discovery/{job['id']}/download.xlsx").status_code == 409
+
+
+def test_quota_during_plan_repair_resumes_without_repeating_initial_call(workflow):
+    manager, searches, calls, state = workflow
+    state.update(plan_quotes=["research in machine learning", "machine learning"], fail_repair_once=True)
+    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
+    manager.execute(job["id"])
+    waiting = manager.db.get(job["id"])
+    assert waiting["state"] == "waiting" and not searches
+    assert waiting["report"]["planning_attempts"][0]["grounding_errors"]
+    manager.db.cooldown("groq", 0)
+    manager.action(job["id"], "resume")
+    manager.execute(job["id"])
+    saved = manager.db.get(job["id"])
+    assert saved["state"] in {"done", "partial"}, saved
+    assert calls.count("Plan") == 3  # Initial + quota response + successful repair.
+    assert len(saved["report"]["planning_attempts"]) == 2
 
 
 def test_unfiltered_prompt_preserves_manual_crawler_contacts(workflow, site_url, tmp_path):

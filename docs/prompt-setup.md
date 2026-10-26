@@ -135,12 +135,22 @@ requires person/page filtering, these rows are marked `Enabled=no` with an
 explanation: uploading them as an ordinary batch would otherwise lose the filters.
 Use the prompt run's contacts workbook for the filtered output.
 
-The evidence JSON records the interpretation, page decisions, supporting quotes,
-record decisions and provider usage. Literal evidence checks prevent invented
+The evidence JSON records the run state/error, proposed plans and quote-validation
+errors, validated interpretation, page decisions, supporting quotes, record
+decisions and provider usage. Literal evidence checks prevent invented
 quotes, but do not prove an LLM's semantic judgment or official-site ownership.
 For explicit people counts, matching records are selected in college/name order;
 they are not ranked by quality. Per-college counts are treated separately from
 total people counts, and shortages are reported.
+
+If planning cannot validate the model's quotations, case/whitespace differences
+are mapped back to exact text from your prompt. Other mismatches receive one
+automatic repair request before the normal semantic audit. The repair uses the
+same quota limits and saved journal as other calls; a quota wait is resumable.
+Unsupported or still-invalid plans never start searching. For a planning failure,
+download the evidence report to inspect the proposed criteria and failure details.
+After updating an older installation that reported "requirements were not
+grounded", restart the portal, hard-refresh the browser, and try the prompt again.
 
 ## Command line alternative
 

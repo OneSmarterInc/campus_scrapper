@@ -107,3 +107,32 @@ test('empty prompt is rejected before sending a request',async()=>{
     assert.equal(p.calls.filter(c=>c.opts.method==='POST').length,0);
   } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
 });
+
+test('failed planning is visibly stopped with no stale interpreting or saved-start message',async()=>{
+  const p=portal(saved({state:'failed',phase:'planning_failed',finished:Date.now()/1000,
+    error:'The AI search plan could not be validated after one automatic repair.',
+    report:{plan:{},candidates:[],issues:[],searches:0,pages:0}}));
+  try {
+    p.$('p-msg').textContent='Run saved. Discovery starts automatically.';
+    await p.w.testPrompt.open('run1');
+    assert.match(p.$('p-status').textContent,/Needs attention/);
+    assert.match(p.$('p-plan').textContent,/run has stopped/);
+    assert.doesNotMatch(p.$('p-plan').textContent,/Interpreting/);
+    assert.match(p.$('p-msg').textContent,/Run stopped/);
+    assert.match(p.$('p-work').textContent,/automatic repair/);
+    assert.equal(p.$('p-download').hidden,true);
+    assert.equal(p.$('p-start').disabled,false);
+    assert.equal(p.w.document.querySelectorAll('#p-stages .current').length,0);
+  } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
+});
+
+test('waiting on plan repair does not claim to be actively interpreting',async()=>{
+  const p=portal(saved({state:'waiting',phase:'planning',retry_at:Date.now()/1000+120,
+    error:'Groq quota reached',report:{plan:{},candidates:[],issues:[],searches:0,pages:0}}));
+  try {
+    await p.w.testPrompt.open('run1');
+    assert.match(p.$('p-work').textContent,/Groq quota/);
+    assert.doesNotMatch(p.$('p-plan').textContent,/Interpreting/);
+    assert.match(p.$('p-plan').textContent,/No validated search plan yet/);
+  } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
+});

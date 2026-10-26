@@ -53,6 +53,8 @@ async function pollPrompt(id) {
     return;
   }
   const j = promptJob = r.data, report = j.report || {}, p = j.progress || {}, plan = report.plan || {};
+  if (j.state === 'failed') say($('p-msg'), 'Run stopped. See the reason below; the evidence report includes diagnostic details.', 'bad');
+  else if (j.state !== 'queued') say($('p-msg'), '');
   $('p-status').textContent = `${promptLabels[j.state] || j.state} · ${j.body.prompt}`;
   const active = promptActive.has(j.state);
   $('p-start').disabled = active;
@@ -76,7 +78,11 @@ async function pollPrompt(id) {
   else work = p.current ? `Checking: ${p.current}` : 'Time remaining depends on site speed, evidence found and API capacity. No reliable estimate yet.';
   $('p-work').textContent = work;
   $('p-usage').textContent = (j.usage || []).map(u => `${u.provider}: ${u.requests} API requests, ${u.tokens.toLocaleString()} tokens used or reserved`).join(' · ');
-  $('p-plan').innerHTML = `<p>${esc(plan.objective || 'Interpreting your request…')}</p><ul>${(plan.criteria || []).map(c => `<li>${esc(c.requirement)}</li>`).join('')}</ul>`;
+  const planMessage = plan.objective || (j.state === 'running' && j.phase === 'planning'
+    ? 'Interpreting your request…' : j.state === 'failed'
+    ? 'No validated search plan. This run has stopped; no search results are available.'
+    : 'No validated search plan yet.');
+  $('p-plan').innerHTML = `<p>${esc(planMessage)}</p><ul>${(plan.criteria || []).map(c => `<li>${esc(c.requirement)}</li>`).join('')}</ul>`;
   $('p-clarify').hidden = j.state !== 'clarify';
   $('p-questions').textContent = (plan.questions || []).join(' ') || plan.explanation || '';
   if (j.state === 'unsupported') $('p-work').textContent = plan.explanation || (report.issues || []).join(' ') || 'This portal supports campus faculty/staff and office contacts. It excludes individual students.';

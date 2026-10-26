@@ -1,6 +1,40 @@
-# Prompt discovery validation — 2026-10-25
+# Prompt discovery validation
 
-## Automated results
+## 2026-10-26 — planning failure correction
+
+The reported run stopped before search when a model-supplied `prompt_quote` did
+not occur literally in the prompt. Its original evidence export omitted the
+rejected plan and error, so the exact offending quotation cannot be recovered
+from that report. Replaying the old code with the user's Pune prompt and a
+case-only quotation change reproduced the same error with zero searches.
+
+The correction restores original quote spans for case/whitespace differences,
+allows one bounded model repair for other mismatches, and retains the independent
+semantic audit and all search/page/person evidence checks. Planner instructions
+separate counts/output instructions and built-in policy from user eligibility
+criteria. Rejected proposals and grounding errors are now saved, and evidence
+exports include the actual job state and error. The UI no longer says it is
+interpreting a failed or waiting request.
+
+- **173 Python tests passed**, including repaired prompt → real local HTTP crawl
+  → person filtering → Excel; a quota interruption during repair resumes using
+  the saved initial response. Invalid plans never search or enable final export.
+- **8 DOM integration tests passed**. A Chromium visual check with controlled API
+  responses also verified the failed-run message, enabled new-run control,
+  disabled final export and absence of JavaScript errors.
+- Regression cases cover both reported prompts, Hinglish negation, whitespace
+  and case, paraphrased/combined/invented quotations, semantic-audit rejection,
+  and genuinely missing context. Compilation, JS syntax and whitespace checks
+  passed. Local HTTP tests ran with this environment's external proxy variables
+  unset; the one Starlette test-client deprecation warning remains.
+
+No live Groq/Gemini credentials are available here. These controlled tests do not
+establish live-college accuracy or recall. Restart the updated portal, hard-refresh
+the page and rerun the Pune prompt on the configured Windows installation.
+
+## 2026-10-25 — original integration
+
+### Automated results
 
 - **156 Python tests passed**, including the existing campus crawler and discovery
   prototype regression tests. One dependency deprecation warning was reported
@@ -24,7 +58,7 @@ git diff --check
 The DOM checks require the optional jsdom development dependency; see
 [setup instructions](prompt-setup.md).
 
-## What the integration tests establish
+### What the integration tests establish
 
 The integration suite starts local HTTP services for a fictional college and a
 SearXNG-compatible search fixture. It uses the actual HTTP fetcher, campus crawler,
@@ -46,7 +80,7 @@ measuring live model quality.
 | Resource destinations | Private DNS destinations and redirects are rejected in automatic discovery. |
 | UI behavior | Quota waits, partial coverage, clarification, empty input, output escaping and final-download gating pass DOM tests. |
 
-## What has not been validated here
+### What had not been validated at original integration
 
 No live Groq or Gemini key, running SearXNG service, or Docker executable was
 available in the implementation environment. Real-provider inference, current

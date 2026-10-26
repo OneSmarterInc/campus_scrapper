@@ -158,6 +158,16 @@ class PromptManager:
                 changes["report"] = event.pop("report")
             self.update(job_id, **changes)
 
+        def fail(message):
+            latest = self.db.get(job_id)
+            report = latest.get("report") or asdict(Report(prompt=body.prompt))
+            planning = latest.get("phase") in {"planning", "planning_failed"}
+            report["status"] = "planning_failed" if planning else "failed"
+            if message not in report.setdefault("issues", []):
+                report["issues"].append(message)
+            self.update(job_id, state="failed", phase="planning_failed" if planning else latest["phase"],
+                        report=report, error=message, finished=time.time())
+
         try:
             self.update(job_id, state="running")
             model = ModelRouter(self.db, job_id, control)
@@ -280,10 +290,10 @@ class PromptManager:
             state = self.db.get(job_id)["state"]
             self.update(job_id, state="stopped" if state == "stopping" else ("interrupted" if self.closed.is_set() else "paused"), retry_at=None)
         except ConfigurationError as exc:
-            self.update(job_id, state="failed", error=str(exc), finished=time.time())
+            fail(str(exc))
         except Exception as exc:
             # Do not expose arbitrary HTTP exception bodies or API credentials.
-            self.update(job_id, state="failed", error=f"{type(exc).__name__}: the run could not finish. Progress is saved; resume after checking setup", finished=time.time())
+            fail(f"{type(exc).__name__}: the run could not finish. Progress is saved; resume after checking setup")
         finally:
             self.update(job_id, usage=self.db.stats(job_id))
             for service in (model, search, fetcher):
