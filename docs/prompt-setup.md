@@ -261,3 +261,30 @@ URLs are not yet verified faculty directories. If alternative engines remain
 unavailable, inspect SearXNG container logs; changing the language model key will
 not repair the search service. Start a new run after updating the portal so old
 queued search results are not reused.
+
+
+### Upgrade search recovery (October 26)
+
+Older generated settings only kept four engines. Upgrade those settings to add
+Startpage, Yahoo and Qwant, remove Bing from the default set, and recreate the
+container so it loads the new config. The upgrade preserves the secret and saves
+a git-ignored backup. Custom layouts are left untouched with an explanation.
+
+```powershell
+git pull --ff-only origin main
+.\.venv\Scripts\python.exe tools\setup_search.py --upgrade
+docker compose -f compose.search.yml up -d --force-recreate
+.\.venv\Scripts\python.exe -m campusscraper serve --port 8001
+```
+
+Hard-refresh the portal and start a new run. The visible contact-extraction
+checkbox controls whether discovery stops with downloadable source URLs or
+continues through scraping, record filtering and contact Excel export. Source
+count shortfalls are displayed explicitly. An evidence report is a diagnostic
+log, never a substitute for a source or contacts results file.
+
+Alternative-engine requests omit `categories`: SearXNG adds category engines to
+explicit engine selections, which previously reintroduced Bing. Recovery also
+checks returned engine provenance. Engine error reasons are saved in evidence.
+External engine availability still depends on the local installation and network;
+this migration cannot guarantee that an upstream provider will accept requests.

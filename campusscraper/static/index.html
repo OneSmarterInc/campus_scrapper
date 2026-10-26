@@ -165,6 +165,7 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
   <p class="msg" id="p-config" role="status"></p>
   <label for="p-text" style="margin-top:12px">What are you looking for?</label>
   <textarea id="p-text" maxlength="6000" rows="3" placeholder="Find 10 engineering colleges in Mumbai and their faculty contacts. Exclude Navi Mumbai."></textarea>
+  <label class="check" style="margin-top:10px"><input type="checkbox" id="p-auto" checked> Also extract faculty contacts (uncheck for source URLs only)</label>
   <details><summary>Run limits and options</summary>
     <div class="grid">
       <div><label for="p-colleges">Maximum colleges</label><input id="p-colleges" type="number" value="10" min="1" max="100"></div>
@@ -173,7 +174,6 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
       <div><label for="p-crawl-pages">Pages per college</label><input id="p-crawl-pages" type="number" value="200" min="1" max="1000"></div>
       <div><label for="p-render">JavaScript pages</label><select id="p-render"><option value="auto">Auto browser</option><option value="never">Plain HTTP only</option><option value="always">Always browser</option></select></div>
     </div>
-    <label class="check" style="margin-top:10px"><input type="checkbox" id="p-auto" checked> Automatically scrape matching sources</label>
     <p class="hint">These are work limits, not promises of complete coverage. If you request more colleges than the maximum, the shortfall will be reported.</p>
   </details>
   <div class="row"><button type="button" id="p-start">Find and scrape</button><button type="button" id="p-pause" class="secondary" disabled>Pause</button><button type="button" id="p-stop" class="secondary" disabled>Stop</button><button type="button" id="p-resume" class="secondary" hidden>Resume saved run</button></div>

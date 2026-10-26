@@ -159,3 +159,46 @@ def test_faculty_link_survives_large_about_navigation():
     assert links[0]['url'] == 'https://college.example/zz/faculty'
     assert len(links) == 20
     assert all('127.0.0.1' not in l['url'] for l in links)
+
+
+def test_alternative_engines_do_not_reenable_bing_via_general_category(tmp_path):
+    db = DiscoveryDB(tmp_path / 'db')
+    calls = []
+    def handle(req):
+        calls.append(req)
+        # Match SearXNG's additive categories/engines contract.
+        is_isolated = 'engines' in req.url.params and 'categories' not in req.url.params
+        return httpx.Response(200, json={'results': [GOOD if is_isolated else BAD]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        search = CachedSearch(db, 'job', 'http://search.test', client=client)
+        assert search.search(QUERY) == [GOOD['url']]
+    assert len(calls) == 2
+    assert 'startpage' in calls[-1].url.params['engines']
+    assert 'categories' not in calls[-1].url.params
+    db.db.close()
+
+
+def test_bing_cannot_masquerade_as_alternative_engine_recovery(tmp_path):
+    db = DiscoveryDB(tmp_path / 'db')
+    def handle(req):
+        return httpx.Response(200, json={'results': [dict(GOOD, engines=['bing'])]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        search = CachedSearch(db, 'job', 'http://search.test', client=client)
+        from campusscraper.discovery_services import IncompleteSearch
+        with pytest.raises(IncompleteSearch):
+            search.search(QUERY, _fallback=True)
+        assert search.search_details[QUERY]['unexpected_engine_results']
+    db.db.close()
+
+
+def test_invalid_optional_refinement_retains_verified_source():
+    from campusscraper.discovery_services import ModelResponseError
+    from campusscraper.verified_discovery import discover_verified
+    from campusscraper.prompt_discovery import Limits
+    from test_prompt_discovery import Fetch, Search, ScriptedModel, plan, decision
+    from test_prompt_workflow import REVIEW
+    model = ScriptedModel(plan(requested_institutions=2), REVIEW, decision(),
+                          ModelResponseError('groq: incomplete or invalid structured response'))
+    report = discover_verified('Find two colleges', model, Search(), Fetch(), Limits(rounds=2))
+    assert len(report.candidates) == 1 and report.status == 'candidates_found'
+    assert any('retained' in i for i in report.issues)

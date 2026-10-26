@@ -193,3 +193,31 @@ cover five distinct college pages, exhausted bad searches, configuration errors,
 and navigation crowding. Live fetches of SPIT, TSEC and VJTI were attempted but
 DNS resolution failed in this execution environment. No live Groq/SearXNG
 end-to-end success or production accuracy is claimed.
+
+
+## Engine isolation, model repair and results UI (2026-10-26)
+
+Run 5a92c45a06 exposed category/engine union behavior in SearXNG: an explicit
+alternative engine selection combined with categories=general re-added Bing.
+Confirmed against upstream searx/webadapter.py parse_generic. Recovery now omits
+categories and rejects Bing-only provenance. Generated settings can be upgraded
+to include Startpage, Yahoo and Qwant, preserving the secret and an ignored backup.
+
+Completed but invalid structured model responses get one bounded repair attempt.
+The counter survives quota waits/restarts, raw failed responses are not stored,
+and local schema length/list limits are stated in model instructions. Optional
+refinement failure retains verified source results rather than failing the whole
+job. Required evidence and semantic checks remain enforced.
+
+UI now states failure/no-output explicitly, distinguishes evidence logs from
+result files, exposes source-only/contact mode, displays requested-count
+shortfalls, and hides extraction stages for URL-only runs. Headless Chromium
+verified ready and failed states with controlled API fixtures and no JS errors.
+
+Validation includes the full Python suite, DOM tests, controlled actual crawler
+and Excel integration, engine-isolation/provenance regressions, malformed-model
+repair and resume bounds, and settings migration/secret preservation. These are
+not live-provider accuracy measurements. This environment has no configured
+Groq/Gemini credentials or reachable SearXNG, and direct college-domain DNS probes
+failed. Full live completion remains unverified; do not label this release a
+proven production accuracy result or an exhaustive security audit.

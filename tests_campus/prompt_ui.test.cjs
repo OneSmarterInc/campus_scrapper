@@ -115,7 +115,7 @@ test('failed planning is visibly stopped with no stale interpreting or saved-sta
   try {
     p.$('p-msg').textContent='Run saved. Discovery starts automatically.';
     await p.w.testPrompt.open('run1');
-    assert.match(p.$('p-status').textContent,/Needs attention/);
+    assert.match(p.$('p-status').textContent,/Run failed/);
     assert.match(p.$('p-plan').textContent,/run has stopped/);
     assert.doesNotMatch(p.$('p-plan').textContent,/Interpreting/);
     assert.match(p.$('p-msg').textContent,/Run stopped/);
@@ -134,5 +134,34 @@ test('waiting on plan repair does not claim to be actively interpreting',async()
     assert.match(p.$('p-work').textContent,/Groq quota/);
     assert.doesNotMatch(p.$('p-plan').textContent,/Interpreting/);
     assert.match(p.$('p-plan').textContent,/No validated search plan yet/);
+  } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
+});
+
+test('URL-only completion clearly identifies results and download',async()=>{
+  const j=saved({state:'sources_ready',phase:'sources_ready'});
+  j.body.auto_scrape=false;
+  j.report.plan.requested_institutions=5;
+  j.report.candidates=[{institution:'College A',url:'https://college.example/faculty'}];
+  const p=portal(j);
+  try {
+    await p.w.testPrompt.open('run1');
+    assert.match(p.$('p-work').textContent,/Download source URLs/);
+    assert.equal(p.$('p-source-download').hidden,false);
+    assert.equal(p.$('p-download').hidden,true);
+    assert.equal(p.$('p-sources').querySelector('a').href,'https://college.example/faculty');
+    assert.equal(p.$('p-auto').closest('details'),null);
+    assert.match(p.$('p-work').textContent,/1 of 5 requested/);
+    assert.equal(p.w.document.querySelector('#p-stages [data-phase="scraping"]').hidden,true);
+  } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
+});
+
+test('failed discovery explicitly says no results and labels evidence as diagnostic',async()=>{
+  const p=portal(saved({state:'failed',phase:'searching',error:'Search unavailable'}));
+  try {
+    await p.w.testPrompt.open('run1');
+    assert.match(p.$('p-msg').textContent,/No verified faculty URLs or contacts/);
+    assert.match(p.$('p-msg').textContent,/diagnostic log/);
+    assert.equal(p.$('p-source-download').hidden,true);
+    assert.equal(p.$('p-download').hidden,true);
   } finally {await new Promise(resolve=>setImmediate(resolve));p.dom.window.close();}
 });

@@ -3,7 +3,7 @@ let promptId = null, promptTimer = null, promptJob = null;
 const promptActive = new Set(['queued', 'running', 'waiting', 'pausing', 'stopping']);
 const promptLabels = {queued:'Queued', running:'Working', waiting:'Waiting for service capacity', paused:'Paused',
   pausing:'Finishing the current operation before pausing', stopping:'Stopping', stopped:'Stopped', interrupted:'Interrupted — progress saved',
-  failed:'Needs attention', done:'Finished', partial:'Finished with coverage limits', clarify:'Clarification needed',
+  failed:'Run failed', done:'Finished', partial:'Finished with coverage limits', clarify:'Clarification needed',
   unsupported:'Outside the campus scraper’s scope', no_candidates:'No matching sources found', sources_ready:'Source list ready'};
 
 async function promptSetup() {
@@ -53,7 +53,7 @@ async function pollPrompt(id) {
     return;
   }
   const j = promptJob = r.data, report = j.report || {}, p = j.progress || {}, plan = report.plan || {};
-  if (j.state === 'failed') say($('p-msg'), 'Run stopped. See the reason below; the evidence report includes diagnostic details.', 'bad');
+  if (j.state === 'failed') say($('p-msg'), (report.candidates || []).length ? 'Run stopped. Verified source URLs are available below; contact extraction may be incomplete.' : 'Run stopped. No verified faculty URLs or contacts were produced. The evidence report is a diagnostic log.', 'bad');
   else if (j.state !== 'queued') say($('p-msg'), '');
   $('p-status').textContent = `${promptLabels[j.state] || j.state} · ${j.body.prompt}`;
   const active = promptActive.has(j.state);
@@ -64,13 +64,18 @@ async function pollPrompt(id) {
   $('p-download').hidden = !j.download_ready;
   $('p-source-download').hidden = !(report.candidates || []).length;
   const stage = ['checking_pages','sources_ready'].includes(j.phase) ? 'searching' : j.phase;
-  document.querySelectorAll('#p-stages span').forEach(el => el.classList.toggle('current', active && el.dataset.phase === stage));
+  document.querySelectorAll('#p-stages span').forEach(el => {
+    el.hidden = j.body.auto_scrape === false && ['scraping','filtering','exporting'].includes(el.dataset.phase);
+    el.classList.toggle('current', active && el.dataset.phase === stage);
+  });
   const institutes = new Set((report.candidates || []).map(c => c.institution));
   $('p-stats').innerHTML = [['Source colleges found', institutes.size], ['Discovery pages checked', report.pages || 0],
     ['Search queries used', report.searches || 0], ['Elapsed', fmtDur(j.started,j.finished)]].map(([k,v]) => `<div class="stat"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
   let work = '';
   if (j.state === 'waiting') work = `${j.error || 'Waiting for capacity'}. Next attempt: ${fmtTime(j.retry_at)}. Progress is saved; keep the server running for automatic retry.`;
   else if (j.state === 'failed') work = j.error || 'Check setup, then resume this saved run.';
+  else if (j.state === 'sources_ready') work = `${institutes.size}${plan.requested_institutions ? ' of ' + plan.requested_institutions + ' requested' : ''} colleges have verified source pages below. Download source URLs to save them. Contact scraping was not requested.${plan.requested_institutions > institutes.size ? ' The requested college count was not reached; see coverage notes.' : ''}`;
+  else if (j.state === 'no_candidates') work = 'Search finished without verified faculty sources. No results file was produced. See coverage notes for search or access failures.';
   else if (j.phase === 'scraping') work = `${p.completed || 0} of ${p.total || j.rows.length} college crawls ended. Filtering and export follow; the overall run is still in progress.`;
   else if (j.phase === 'filtering') work = `Checking extracted records against your criteria: ${p.checked || 0}/${p.total || '…'}; ${p.matched || 0} matched so far.`;
   else if (j.phase === 'finished') work = `${j.stats.people_found || 0} matching people (${j.stats.faculty || 0} faculty) and ${j.stats.student_offices || 0} offices saved across ${j.stats.colleges_with_matching_records || 0} colleges. ${j.stats.filtered_out || 0} extracted records did not meet the prompt’s criteria.`;

@@ -272,3 +272,52 @@ def test_redirect_checked_before_target_request(monkeypatch):
     finally:
         fetcher.close()
     assert seen == ["https://public.example/"]
+
+
+def test_invalid_model_response_repairs_once_and_caches(db, keys, monkeypatch):
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    calls = []
+    def handler(req):
+        calls.append(json.loads(req.content))
+        return groq_ok({'unexpected': 'value'}) if len(calls) == 1 else groq_ok(OK)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        router = ModelRouter(db, 'repair', client=client)
+        assert router.ask(PlanReview, 'Review', {}).outcome == 'ok'
+        assert router.ask(PlanReview, 'Review', {}).outcome == 'ok'
+    assert len(calls) == 2
+    assert 'Previous response failed validation' in calls[1]['messages'][0]['content']
+    assert 'maxItems' in calls[0]['messages'][0]['content']
+
+
+def test_invalid_model_response_retry_budget_survives_restart(db, keys, monkeypatch):
+    from campusscraper.discovery_services import ModelResponseError
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    calls = []
+    def handler(req):
+        calls.append(req)
+        return groq_ok({'unexpected': 'secret-body-that-must-not-be-saved'})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        for _ in range(2):
+            with pytest.raises(ModelResponseError):
+                ModelRouter(db, 'repair', client=client).ask(PlanReview, 'Review', {})
+    assert len(calls) == 2
+    rows = db.db.execute('SELECT data FROM steps').fetchall()
+    assert 'secret-body' not in str(rows)
+
+
+def test_invalid_model_wait_resumes_repair_not_original(db, keys, monkeypatch):
+    from campusscraper.discovery_services import ModelResponseError
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    class Router(ModelRouter):
+        instructions = []
+        def _ask(self, provider, schema, instruction, payload):
+            self.instructions.append(instruction)
+            if len(self.instructions) == 1:
+                raise ModelResponseError('groq: incomplete or invalid structured response')
+            if len(self.instructions) == 2:
+                raise ServiceWait('quota')
+            return PlanReview(**OK)
+    with pytest.raises(ServiceWait):
+        Router(db, 'repair').ask(PlanReview, 'Review', {})
+    assert Router(db, 'repair').ask(PlanReview, 'Review', {}).outcome == 'ok'
+    assert all('Previous response failed' in s for s in Router.instructions[1:])

@@ -23,7 +23,7 @@ from .models import Page
 from .fetch import _ssl_verify
 from .search_candidates import rank_urls, unrelated_result
 
-REVISION = 1
+REVISION = 2
 
 
 class ServiceWait(Exception):
@@ -34,6 +34,10 @@ class ServiceWait(Exception):
 
 class ConfigurationError(Exception):
     pass
+
+
+class ModelResponseError(ConfigurationError):
+    """A completed model response failed validation; retry once, then surface it."""
 
 
 class SearchQualityError(ConfigurationError):
@@ -227,17 +231,36 @@ class ModelRouter:
             raise ConfigurationError("Set GROQ_API_KEY (or GEMINI_API_KEY) in the server environment, then restart the portal")
         waits, errors = [], []
         for provider in providers:
-            self.control()
-            try:
-                result = self._ask(provider, schema, instruction, payload)
-                self.db.cache(self.job, key, result.model_dump())
-                return result
-            except ServiceWait as exc:
-                waits.append(exc)
-            except ConfigurationError as exc:
-                errors.append(str(exc))
+            marker = key + ":invalid:" + provider
+            invalid = self.db.cached(self.job, marker) or {"attempts": 0}
+            while invalid["attempts"] < 2:
+                self.control()
+                try:
+                    request_instruction = instruction
+                    if invalid["attempts"]:
+                        request_instruction += ("\nPrevious response failed validation. Return concise complete JSON only. "
+                                                "Obey all field types, lengths and list limits. Do not guess missing evidence.")
+                    result = self._ask(provider, schema, request_instruction, payload)
+                    self.db.cache(self.job, key, result.model_dump())
+                    return result
+                except ModelResponseError as exc:
+                    invalid = {"attempts": invalid["attempts"] + 1, "error": str(exc)}
+                    self.db.cache(self.job, marker, invalid)
+                    if invalid["attempts"] == 2:
+                        errors.append(str(exc))
+                except ServiceWait as exc:
+                    waits.append(exc)
+                    break
+                except ConfigurationError as exc:
+                    errors.append(str(exc))
+                    break
+            else:
+                if invalid["error"] not in errors:
+                    errors.append(invalid["error"])
         if waits:
             raise ServiceWait("; ".join([str(w) for w in waits] + errors), min(w.retry_at for w in waits))
+        if errors and all("incomplete or invalid structured response" in e for e in errors):
+            raise ModelResponseError("; ".join(errors))
         raise ConfigurationError("; ".join(errors))
 
     def _ask(self, provider, schema, instruction, payload):
@@ -245,6 +268,22 @@ class ModelRouter:
         if not re.fullmatch(r"[A-Za-z0-9._/-]+", model) or ".." in model:
             raise ConfigurationError(f"Invalid {provider} model name")
         shape = json_schema(schema)
+        # Providers use a schema subset; state omitted local constraints explicitly.
+        constraints = []
+        def visit(node, path="root"):
+            if isinstance(node, dict):
+                rules = {k: v for k, v in node.items() if k in
+                         {"minLength", "maxLength", "minItems", "maxItems", "minimum", "maximum"}}
+                if rules:
+                    constraints.append({"field": path, **rules})
+                for k, v in node.items():
+                    if isinstance(v, (dict, list)):
+                        visit(v, path + "." + k)
+            elif isinstance(node, list):
+                for v in node:
+                    visit(v, path)
+        visit(schema.model_json_schema())
+        instruction += "\nLocal validation limits: " + json.dumps(constraints, separators=(",", ":"))
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         # A conservative scheduling estimate, not a tokenizer or a billing claim.
         estimate = math.ceil(len((instruction + content + json.dumps(shape)).encode()) / 3) + 2000
@@ -295,8 +334,8 @@ class ModelRouter:
                     raise ValueError("incomplete response")
                 text = "".join(p.get("text", "") for p in choice["content"]["parts"] if not p.get("thought"))
             return schema.model_validate_json(text)
-        except (ValueError, KeyError, IndexError, TypeError):
-            raise ConfigurationError(f"{provider}: incomplete or invalid structured response; no URLs or contacts were guessed") from None
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            raise ModelResponseError(f"{provider}: incomplete or invalid structured response; no URLs or contacts were guessed") from None
 
 
 class CachedSearch:
@@ -313,15 +352,15 @@ class CachedSearch:
 
     def search(self, query, _fallback=False):
         self.control()
-        key = "search:" + digest(["quality-v2", self.base_url, query, _fallback])
+        key = "search:" + digest(["quality-v3", self.base_url, query, _fallback])
         cached = self.db.cached(self.job, key)
         if cached is not None:
             self.warnings.extend(cached["warnings"])
             self.search_details[query] = cached.get("details", {"results": [{"url": u} for u in cached["urls"]]})
             return cached["urls"]
         try:
-            response = self.client.get(self.base_url + "/search", params={"q": query, "format": "json", "categories": "general", "safesearch": 2,
-                **({"engines": "google,duckduckgo,brave"} if _fallback else {})})
+            response = self.client.get(self.base_url + "/search", params={"q": query, "format": "json", "safesearch": 2,
+                **({"engines": "google,duckduckgo,brave,startpage,yahoo,qwant"} if _fallback else {"categories": "general"})})
             if response.status_code in (401, 403):
                 raise ConfigurationError("SearXNG refused JSON search. Enable search.formats: [html, json] in its settings.yml")
             if response.status_code == 429 or response.status_code >= 500:
@@ -343,13 +382,20 @@ class CachedSearch:
             results.append({"url": r["url"], "title": str(r.get("title") or "")[:250],
                             "content": str(r.get("content") or "")[:800],
                             "engines": [str(e)[:60] for e in (r.get("engines") or [])[:8]]})
-        rejected = [r for r in results if unrelated_result(query, r)]
+        # SearXNG categories can re-add engines; reject unexpected fallback
+        # provenance as well as isolating the request. Never call Bing a recovery.
+        unexpected = [r for r in results if _fallback and "bing" in r["engines"]
+                      and not set(r["engines"]) & {"google", "duckduckgo", "brave", "startpage", "yahoo", "qwant"}]
+        rejected = [r for r in results if r in unexpected or unrelated_result(query, r)]
         by_url = {r["url"]: r for r in results if r not in rejected}
         urls = rank_urls(list(by_url), by_url, query)[:30]
         unavailable = [str(e[0])[:60] for e in data.get("unresponsive_engines", [])
                        if isinstance(e, (list, tuple)) and e]
         details = {"results": [by_url[u] for u in urls], "unavailable_engines": unavailable,
-                   "rejected_results": rejected, "fallback_used": _fallback}
+                   "rejected_results": rejected, "fallback_used": _fallback,
+                   "unexpected_engine_results": unexpected,
+                   "engine_errors": [[str(x)[:200] for x in e[:2]] for e in data.get("unresponsive_engines", [])
+                                     if isinstance(e, (list, tuple))]}
         self.search_details[query] = details
         warnings = []
         if rejected and not urls and not _fallback:

@@ -13,3 +13,4 @@ tests_campus/site/
 !.env.example
 searxng/settings.yml
 searxng/data/
+searxng/settings.yml.*
