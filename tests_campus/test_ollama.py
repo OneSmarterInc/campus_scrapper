@@ -108,3 +108,47 @@ def test_navigation_survives_invalid_small_model_assessment():
     assert len(report.candidates)==1
     assert report.candidates[0]['url']=='https://college.example/faculty'
     assert any('unverified' in issue for issue in report.issues)
+
+
+def test_validation_feedback_identifies_fields_and_repairs(local):
+    calls=[]
+    def handler(req):
+        body=json.loads(req.content)
+        calls.append(body)
+        if len(calls)==1:
+            return response({'outcome':'ok','questions':'wrong type','reason':'Check'})
+        assert 'questions: list_type' in body['messages'][0]['content']
+        assert 'JSON schema:' in body['messages'][0]['content']
+        return response()
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        router=ModelRouter(local,'job',client=client)
+        assert router.ask(PlanReview,'Review',{}).outcome=='ok'
+        assert router.diagnostics[0]['schema']=='PlanReview'
+        assert router.diagnostics[0]['detail']=='questions: list_type'
+        assert router.diagnostics[1]['status']=='valid'
+
+
+def test_invalid_output_diagnostics_never_persist_response_secrets(local):
+    def handler(req):
+        return response({'outcome':'secret-content', 'questions':[], 'reason':'ok', 'secret-extra-key':'secret-value'})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        router=ModelRouter(local,'job',client=client)
+        with pytest.raises(ModelResponseError) as exc:
+            router.ask(PlanReview,'Review',{})
+        assert 'outcome: literal_error' in str(exc.value)
+        assert 'secret-' not in str(exc.value)
+        assert 'secret-' not in json.dumps(router.diagnostics)
+    assert 'secret-content' not in local.path.read_bytes().decode(errors='ignore')
+
+
+@pytest.mark.parametrize('body,detail', [
+    ({'done':True,'done_reason':'length'},'generation incomplete'),
+    ({'done':True,'done_reason':'stop','message':{'content':''}},'missing or empty'),
+    ([], 'must be an object'),
+    ({'done':True,'done_reason':'stop','message':{'content':'{broken'}},'json_invalid'),
+])
+def test_local_diagnostics_distinguish_failure_modes(local,body,detail):
+    with httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(200,json=body))) as client:
+        router=ModelRouter(local,'job',client=client)
+        with pytest.raises(ModelResponseError,match=detail): router.ask(PlanReview,'Review',{})
+        assert len(router.diagnostics)==2

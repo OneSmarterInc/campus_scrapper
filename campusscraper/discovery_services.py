@@ -18,12 +18,13 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
 from .models import Page
 from .fetch import _ssl_verify
 from .search_candidates import rank_urls, unrelated_result
 
-REVISION = 2
+REVISION = 3
 
 
 class ServiceWait(Exception):
@@ -225,6 +226,7 @@ class ModelRouter:
         self.client = client or httpx.Client(timeout=90, follow_redirects=False, trust_env=False, verify=_ssl_verify())
         self.owns_client = client is None
         self.config = settings()
+        self.diagnostics = []
 
     def close(self):
         if self.owns_client:
@@ -251,6 +253,8 @@ class ModelRouter:
                     if invalid["attempts"]:
                         request_instruction += ("\nPrevious response failed validation. Return concise complete JSON only. "
                                                 "Obey all field types, lengths and list limits. Do not guess missing evidence.")
+                        if provider == "ollama":
+                            request_instruction += "\nValidation feedback: " + invalid["error"]
                     result = self._ask(provider, schema, request_instruction, payload)
                     self.db.cache(self.job, key, result.model_dump())
                     return result
@@ -358,7 +362,11 @@ class ModelRouter:
         body = {"model": model, "stream": False, "think": False,
                 "format": schema.model_json_schema(), "keep_alive": "5m",
                 "options": {"temperature": 0, "num_ctx": 16384, "num_predict": 4096},
-                "messages": [{"role": "system", "content": instruction + "\nReturn only JSON matching the schema. Never invent evidence."},
+                "messages": [{"role": "system", "content": instruction + "\nReturn only JSON matching the schema. Never invent evidence. "
+                    "Use null for unknown optional counts, never 0 or an empty string. "
+                    "All requested counts must be positive integers when supplied. "
+                    "Copy prompt quotes exactly. Keep lists within the schema limits.\nJSON schema: "
+                    + json.dumps(schema.model_json_schema(), separators=(",", ":"))},
                              {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]}
         try:
             response = self.client.post(self.config["ollama_url"] + "/api/chat", json=body, timeout=180)
@@ -368,13 +376,51 @@ class ModelRouter:
             raise ConfigurationError(f"ollama: model unavailable; run ollama pull {model}")
         if response.status_code != 200:
             raise ConfigurationError(f"ollama: HTTP {response.status_code}; check the local Ollama server and available memory")
+        diagnostic = {"schema": schema.__name__, "model": model}
+        def fail(detail):
+            diagnostic.update(status="invalid", detail=detail)
+            self.diagnostics.append(diagnostic)
+            raise ModelResponseError(
+                f"ollama: incomplete or invalid structured response [{schema.__name__}: {detail}]; "
+                "no URLs or contacts were guessed") from None
         try:
             data = response.json()
-            if data.get("done") is not True or data.get("done_reason") != "stop":
-                raise ValueError("incomplete response")
-            return schema.model_validate_json(data["message"]["content"])
-        except (ValueError, KeyError, TypeError, AttributeError):
-            raise ModelResponseError("ollama: incomplete or invalid structured response; no URLs or contacts were guessed") from None
+        except ValueError:
+            fail("server response is not JSON")
+        if not isinstance(data, dict):
+            fail("server response must be an object")
+        reason = data.get("done_reason")
+        diagnostic["done_reason"] = reason if reason in ("stop", "length", "load", None) else "other"
+        if data.get("done") is not True or reason != "stop":
+            fail("generation incomplete; done_reason=" + str(diagnostic["done_reason"]))
+        message = data.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            fail("message.content is missing or empty")
+        diagnostic["output_characters"] = len(content)
+        try:
+            result = schema.model_validate_json(content)
+        except ValidationError as exc:
+            # Never include response values, input, context, or arbitrary extra
+            # field names in persistent errors (they can contain secrets).
+            known = set()
+            def fields(node):
+                if isinstance(node, dict):
+                    known.update(node.get("properties", {}))
+                    for value in node.values(): fields(value)
+                elif isinstance(node, list):
+                    for value in node: fields(value)
+            fields(schema.model_json_schema())
+            problems = []
+            for error in exc.errors(include_input=False, include_context=False, include_url=False)[:8]:
+                path = ".".join(str(part) if isinstance(part, int) or part in known else "<field>"
+                                for part in error["loc"]) or "root"
+                problems.append(path + ": " + error["type"])
+            fail("; ".join(problems))
+        diagnostic["status"] = "valid"
+        self.diagnostics.append(diagnostic)
+        return result
+
 
 
 class CachedSearch:

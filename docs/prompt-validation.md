@@ -276,3 +276,24 @@ measured real-model accuracy or live 15/20-college coverage results for this
 release. The four-case evaluator is included for running against the installed
 local model; its output is not a live-web benchmark. SearXNG remains necessary
 for discovery; this change does not claim to fix unavailable upstream engines.
+
+
+## Uploaded local evaluation failure: structured response diagnostics
+
+The user's four-case report failed every case with the same generic model error.
+It did not record schema name, field validation failures, completion reason or
+partial discovery state. It therefore cannot establish whether page eligibility
+was ever assessed, or that the 0.6B model is semantically incapable.
+
+The local request now states its JSON schema explicitly in the instruction as well
+as the constrained-output format, explains null optional counts, and passes
+sanitized field/type validation feedback to the existing one repair attempt.
+Errors distinguish truncated output, empty output, malformed JSON, and typed field
+failures. Diagnostic records omit raw response values and arbitrary extra keys.
+The evaluator includes model stage diagnostics and its last discovery checkpoint.
+The model-cache revision changed so failed validation markers from the old request
+are not reused. Existing evidence gates and the two-attempt bound remain intact.
+
+55 focused provider tests passed. This is a diagnostic/repair improvement, not a
+verified fix for the uploaded live failure; a rerun on the user's local Ollama is
+still required to determine the exact cause and whether repair succeeds.

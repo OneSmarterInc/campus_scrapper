@@ -47,8 +47,10 @@ def main():
                 started = time.monotonic()
                 router = ModelRouter(db, name)
                 row = {'case': name, 'expected_acceptance': expected}
+                checkpoints = []
                 try:
-                    report = discover_verified(PROMPT, router, Search(), Fetch(city, html), limits=Limits(rounds=1))
+                    report = discover_verified(PROMPT, router, Search(), Fetch(city, html), limits=Limits(rounds=1),
+                        progress=lambda event: checkpoints.append(event))
                     actual = bool(report.candidates)
                     plan = report.plan
                     location_preserved = any('mumbai' in c['prompt_quote'].lower() and c['applies_to']=='institution' for c in plan.get('criteria', []))
@@ -57,9 +59,15 @@ def main():
                 except Exception as exc:
                     row.update(passed=False, error=str(exc))
                 finally:
+                    row['model_diagnostics'] = router.diagnostics
+                    row['last_phase'] = checkpoints[-1].get('phase') if checkpoints else 'not_started'
+                    if checkpoints:
+                        row['partial_report'] = checkpoints[-1].get('report', {})
                     router.close()
                 row['seconds'] = round(time.monotonic()-started, 2)
                 results.append(row)
+                if row.get("error"):
+                    print("  " + row["error"])
                 print(f"{name}: {'PASS' if row['passed'] else 'FAIL'} ({row['seconds']}s)")
         finally:
             db.db.close()
