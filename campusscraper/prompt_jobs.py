@@ -40,6 +40,8 @@ class PromptIn(BaseModel):
     # "sites" proves each college by crawling it; "evidence" asks a model to judge pages.
     engine: Literal["sites", "evidence"] = "sites"
     site_pages: int = Field(14, ge=2, le=60)
+    site_seconds: int = Field(40, ge=10, le=300)  # wall clock one site may take while being checked
+    site_workers: int = Field(6, ge=1, le=12)     # sites checked at the same time
 
     @field_validator("prompt")
     @classmethod
@@ -173,18 +175,32 @@ class PromptManager:
                                  "switch the engine to 'AI judges pages' for those")
 
         def make_crawler():
-            return Crawler(ScrapeConfig(render=body.render, strict_public_network=True, max_bytes=2_000_000,
-                                        retries=1, max_pages=body.site_pages, workers=2, patience=0,
+            # Checking a site is a quick look, not the real extraction: no browser,
+            # short timeouts, no retry. The accepted pages are crawled properly later.
+            return Crawler(ScrapeConfig(render="never", strict_public_network=True, max_bytes=2_000_000,
+                                        retries=0, max_pages=body.site_pages, workers=3, patience=0,
+                                        timeout_seconds=10.0, delay_seconds=0.4,
                                         include_offices=request.target != "faculty"),
                            stop_event=self.stop)
+
+        def site_progress(event):
+            """Keep the counters on screen moving while sites are being read."""
+            report.searches = max(report.searches, event.get("searches", 0))
+            report.pages = max(report.pages, event.get("pages", 0))
+            checked, sites = event.get("checked"), event.get("sites")
+            if checked is not None and sites:
+                event["current"] = f"{event['current']} ({checked} of {sites} sites checked)"
+            event["report"] = asdict(report)
+            progress(event)
 
         colleges, rejected, notes = discover_colleges(
             search, make_crawler, want=want, kind=request.kind, location=request.location,
             target=request.target, names=request.names, max_searches=body.searches,
-            control=control, progress=progress)
+            workers=body.site_workers, site_seconds=body.site_seconds,
+            control=control, progress=site_progress)
         report.plan["colleges"] = [c.as_dict() for c in colleges]
-        report.searches = len(getattr(search, "queries", []))
-        report.pages = sum(c.pages_read for c in colleges)
+        report.searches = len(getattr(search, "queries", [])) or report.searches
+        report.pages = max(report.pages, sum(c.pages_read for c in colleges))
         for college in colleges:
             urls = college.office_urls if request.target == "offices" else college.faculty_urls
             for url in urls:

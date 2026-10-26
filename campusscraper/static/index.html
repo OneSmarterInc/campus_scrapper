@@ -175,6 +175,8 @@ details summary { cursor:pointer; color:var(--accent); font-size:13px; margin-to
       <div><label for="p-render">JavaScript pages</label><select id="p-render"><option value="auto">Auto browser</option><option value="never">Plain HTTP only</option><option value="always">Always browser</option></select></div>
       <div><label for="p-engine">How colleges are verified</label><select id="p-engine"><option value="sites">Crawl each site (no AI)</option><option value="evidence">AI judges each page</option></select></div>
       <div><label for="p-site-pages">Pages read per site while checking</label><input id="p-site-pages" type="number" value="14" min="2" max="60"></div>
+      <div><label for="p-site-seconds">Seconds per site</label><input id="p-site-seconds" type="number" value="40" min="10" max="300"></div>
+      <div><label for="p-site-workers">Sites at the same time</label><input id="p-site-workers" type="number" value="6" min="1" max="12"></div>
     </div>
     <p class="hint"><b>Crawl each site</b> proves a college by reading its own pages: it is listed only when the extractor
     actually reads staff from one of its pages, and it needs no AI model. <b>AI judges each page</b> uses the configured

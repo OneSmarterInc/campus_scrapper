@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -153,6 +154,7 @@ class Rejected:
     reason: str
     name: str = ""
     city: str = ""
+    pages_read: int = 0
 
 
 def site_queries(kind="", location="", extra=()):
@@ -235,15 +237,27 @@ def read_identity(page):
     return name, (city_from(text) or ""), text
 
 
-def survey_site(homepage, make_crawler, kind="", location="", target="faculty"):
-    """Crawl a little of one site and let the extractor answer who is there."""
+def survey_site(homepage, make_crawler, kind="", location="", target="faculty", budget=45):
+    """Crawl a little of one site and let the extractor answer who is there.
+
+    budget is the wall clock, in seconds, this site is allowed. A site that
+    answers slowly is dropped with that stated, so one bad host cannot hold up
+    the run; whatever was read before the budget ran out still counts.
+    """
+    started = time.monotonic()
     crawler = make_crawler()
+    host = (urlsplit(homepage).hostname or "").removeprefix("www.")
+    if budget:
+        crawler.deadline = time.time() + budget
     home = crawler.fetcher.get(homepage)  # identity first, on the same paced fetcher
     if home.error or home.status != 200:
-        host = (urlsplit(homepage).hostname or "").removeprefix("www.")
         return None, Rejected(host, f"Home page could not be read: {home.error or home.status}"[:200])
     name, home_city, home_text = read_identity(home)
     result = crawler.run([homepage])
+    spent = time.monotonic() - started
+    if budget and spent >= budget and len(result.pages) < 3:
+        return None, Rejected(host, f"The site answered too slowly: {len(result.pages)} page(s) "
+                                    f"in {budget} seconds", name, home_city, len(result.pages))
     people = result.faculty or result.doctors
     names = Counter(d.get("institution") for d in people if d.get("institution"))
     names.update(o.institution for o in result.offices if o.institution)
@@ -252,7 +266,7 @@ def survey_site(homepage, make_crawler, kind="", location="", target="faculty"):
                     next(iter(names), ""))
     cities = Counter(d.get("city") for d in people if d.get("city"))
     city = home_city or next(iter(cities), "") or city_from(name) or ""
-    host = (urlsplit(homepage).hostname or "").removeprefix("www.")
+    pages_read = len(result.pages)
 
     by_page = Counter()
     for page in result.pages:
@@ -271,31 +285,31 @@ def survey_site(homepage, make_crawler, kind="", location="", target="faculty"):
                                     *(d.get("designation") or "" for d in people),
                                     *(o.office_name or "" for o in result.offices)]))
     if not name or not INSTITUTION_WORDS.search(name):
-        return None, Rejected(host, "No college or university name found on the site", name, city)
+        return None, Rejected(host, "No college or university name found on the site", name, city, pages_read)
     wanted_pages = faculty_urls if target != "offices" else office_urls
     if not wanted_pages:
         kinds = {"offices": "student office", "both": "faculty or student office"}.get(target, "faculty")
-        return None, Rejected(host, f"No page on this site listed {kinds} contacts", name, city)
+        return None, Rejected(host, f"No page on this site listed {kinds} contacts", name, city, pages_read)
     if location:
         want = _requested_city(location)
         found = CITY_CANON.get(city, city)
         if want and found and want.casefold() != found.casefold():
-            return None, Rejected(host, f"Site says {found}, not {want}", name, city)
+            return None, Rejected(host, f"Site says {found}, not {want}", name, city, pages_read)
         if want and not found:
-            return None, Rejected(host, f"Site never states {want}", name, city)
+            return None, Rejected(host, f"Site never states {want}", name, city, pages_read)
         college.evidence["location"] = f"{found} read from this site"
     if kind:
         pattern = TYPE_WORDS.get(kind.strip().casefold().split()[0], re.escape(kind.strip()))
         if not re.search(pattern, blob, re.I):
-            return None, Rejected(host, f"Nothing on this site shows it is a {kind} college", name, city)
+            return None, Rejected(host, f"Nothing on this site shows it is a {kind} college", name, city, pages_read)
         college.evidence["institution_type"] = f"{kind} confirmed in the site's own pages"
     college.evidence["staff"] = f"{college.staff_found} staff read from {len(faculty_urls)} page(s)"
     return college, None
 
 
 def discover_colleges(search, make_crawler, want=10, kind="", location="", target="faculty",
-                      queries=(), names=(), max_searches=12, max_sites=40, workers=3,
-                      control=lambda: None, progress=lambda event: None):
+                      queries=(), names=(), max_searches=12, max_sites=40, workers=6,
+                      site_seconds=45, control=lambda: None, progress=lambda event: None):
     """Search, then prove each site by crawling it. Returns (colleges, rejected, notes)."""
     notes, results, searched = [], [], []
     if names:  # named colleges: look them up, do not browse a city list
@@ -315,6 +329,7 @@ def discover_colleges(search, make_crawler, want=10, kind="", location="", targe
         details = getattr(search, "search_details", {}).get(query, {})
         items = details.get("results") or [{"url": u} for u in found]
         results.extend(items)
+        progress({"phase": "searching", "current": query, "searches": len(searched)})
 
     for query in planned[:max_searches]:
         run_search(query)
@@ -329,6 +344,13 @@ def discover_colleges(search, make_crawler, want=10, kind="", location="", targe
     pending = list(hosts)
 
     fatal = []
+    counts = {"checked": 0, "pages": 0}
+
+    def report_counts(current):
+        """The UI must show movement while sites are being read, not after."""
+        progress({"phase": "checking_sites", "current": current, "found": len(colleges),
+                  "checked": counts["checked"], "sites": len(hosts), "searches": len(searched),
+                  "pages": counts["pages"]})
 
     def worker():
         while True:
@@ -342,18 +364,21 @@ def discover_colleges(search, make_crawler, want=10, kind="", location="", targe
                 with lock:
                     fatal.append(exc)
                 return
-            progress({"phase": "checking_sites", "current": homepage})
+            report_counts(f"Reading {host}")
             try:
-                college, reject = survey_site(homepage, make_crawler, kind, location, target)
+                college, reject = survey_site(homepage, make_crawler, kind, location, target,
+                                              budget=site_seconds)
             except Exception as exc:
                 college, reject = None, Rejected(host, f"Site could not be read: {exc}"[:200])
             with lock:
+                counts["checked"] += 1
+                counts["pages"] += college.pages_read if college else (reject.pages_read if reject else 0)
                 if college and len(colleges) < want:
                     colleges.append(college)
-                    progress({"phase": "checking_sites", "current": f"verified {college.name}",
-                              "found": len(colleges)})
                 elif reject:
                     rejected.append(reject)
+            report_counts(f"Verified {college.name}" if college else
+                          f"{host}: {reject.reason if reject else 'no result'}")
 
     threads = [threading.Thread(target=worker, daemon=True, name=f"site-{i}")
                for i in range(max(1, min(workers, len(pending) or 1)))]

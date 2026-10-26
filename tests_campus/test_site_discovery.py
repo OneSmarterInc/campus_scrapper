@@ -185,3 +185,39 @@ def test_verified_colleges_become_crawler_source_rows(campus_web):
     assert [r.institution for r in rows] == ["Sunrise Institute of Technology"]
     assert rows[0].urls == colleges[0].faculty_urls
     assert rows[0].city == "Hyderabad"
+
+
+class SlowHandler(Handler):
+    """A site that answers, but far too slowly to be worth waiting for."""
+
+    def do_GET(self):  # noqa: N802
+        import time as _t
+        _t.sleep(3)
+        super().do_GET()
+
+
+@pytest.fixture(scope="module")
+def slow_site():
+    server = ThreadingHTTPServer(("127.0.0.5", 0), SlowHandler)
+    server.site_key = "sunrise"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.5:{server.server_address[1]}/"
+
+
+def test_a_slow_site_is_abandoned_within_its_budget(slow_site):
+    import time as _t
+    started = _t.monotonic()
+    college, rejected = survey_site(slow_site, crawler_factory(), kind="engineering",
+                                    location="Hyderabad", budget=4)
+    spent = _t.monotonic() - started
+    assert spent < 20, f"a slow site held the run for {spent:.0f}s"
+    assert college is None and "too slowly" in rejected.reason
+
+
+def test_one_slow_site_does_not_stop_the_others(campus_web, slow_site):
+    search = Search(campus_web, extra=[slow_site])
+    colleges, rejected, _ = discover_colleges(search, crawler_factory(), want=5,
+                                              kind="engineering", location="Hyderabad",
+                                              max_searches=2, workers=4, site_seconds=4)
+    assert [c.name for c in colleges] == ["Sunrise Institute of Technology"]
+    assert any("too slowly" in r.reason for r in rejected)

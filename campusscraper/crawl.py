@@ -203,6 +203,9 @@ class Crawler:
         self.value_pages: dict[str, set[str]] = {}
         self.result_pages: list = []  # phone/email -> pages that show it
         self.blocked: list[str] = []
+        # Wall-clock limit for one run. A slow site then costs a known number of
+        # seconds instead of max_pages x timeout, and what was read is kept.
+        self.deadline: float | None = None
 
     # -- frontier -----------------------------------------------------------
     def _score(self, url: str, depth: int, from_focus: bool, hint: str = "") -> float | None:
@@ -359,6 +362,8 @@ class Crawler:
         def take():
             """Next URL to fetch, or None when this worker should stop. Called with the lock held."""
             while True:
+                if self.deadline and time.time() >= self.deadline:
+                    return None
                 if self.stop_event.is_set() or state["fetched"] >= self.cfg.max_pages or state["patience_stop"]:
                     return None
                 if not self._frontier:
