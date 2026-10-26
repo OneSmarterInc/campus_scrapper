@@ -355,9 +355,13 @@ def _load_upload(body: UploadIn):
 
 
 class BatchJob:
-    def __init__(self, body: BatchIn, sources, run_id: str | None = None, resume: bool = False):
+    def __init__(self, body: BatchIn, sources, run_id: str | None = None, resume: bool = False,
+                 seconds_already_spent: float = 0.0):
         self.id = run_id or uuid.uuid4().hex[:10]
         self.resume = resume
+        # A resumed batch continues the same piece of work, so the clock
+        # continues from where it stopped instead of starting again at zero.
+        self.seconds_already_spent = max(0.0, float(seconds_already_spent or 0))
         self.body = body
         self.sources = sources
         self.state = "running"
@@ -380,6 +384,10 @@ class BatchJob:
         self.pause = threading.Event()
         self.xlsx: Path | None = None
         self.live: dict = {}
+
+    def elapsed(self) -> float:
+        """Crawling time for this batch, including earlier sessions of it."""
+        return self.seconds_already_spent + ((self.finished or time.time()) - self.started)
 
     def on_event(self, e: dict) -> None:
         with self.progress_lock:
@@ -435,10 +443,12 @@ class BatchJob:
             self.state = "failed"
         self.finished = time.time()
         _safe(store().update_run, self.id, state=self.state, finished=self.finished, error=self.error,
-              stats=self.stats or {}, xlsx=str(self.xlsx) if self.xlsx else None)
+              stats={**(self.stats or {}), "seconds": round(self.elapsed())},
+              xlsx=str(self.xlsx) if self.xlsx else None)
 
     def _save_college(self, college: str) -> None:
         """This college's people and offices go into the history as soon as it finishes."""
+        _safe(store().update_run, self.id, stats={**(self.stats or {}), "seconds": round(self.elapsed())})
         merger = self.live.get("merger")
         if merger is not None:
             store().save_people(self.id, [d for d in list(merger.records) if d.source_institution == college])
@@ -536,7 +546,7 @@ def batch_status(job_id: str):
     active = [r for r in rows if r["status"] == "crawling"]
     return {"id": job.id, "state": state, "phase": job.phase, "error": job.error,
             "current": ", ".join(r["institution"] for r in active), "index": job.index,
-            "total": len(rows), "elapsed": round((job.finished or time.time()) - job.started),
+            "total": len(rows), "elapsed": round(job.elapsed()),
             "progress": {"fetched": sum(r["pages"] for r in rows),
                          "faculty": sum(r["faculty"] for r in rows)},
             "completed": completed, "active": len(active),
@@ -695,7 +705,8 @@ def run_resume(run_id: str):
     settings = {k: v for k, v in r["settings"].items() if k not in ("filename", "content_base64")}
     body = BatchIn(filename=name or "list.xlsx", content_base64=base64.b64encode(data).decode(), **settings)
     sources, _ = _load_upload(body)
-    job = BatchJob(body, sources, run_id=run_id, resume=True)
+    job = BatchJob(body, sources, run_id=run_id, resume=True,
+                   seconds_already_spent=(r.get("stats") or {}).get("seconds", 0))
     BATCHES[run_id] = job
     store().update_run(run_id, state="running", finished=None, error=None)
     threading.Thread(target=job.run, daemon=True).start()

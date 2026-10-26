@@ -6,8 +6,9 @@ function fmtTime(t) { if (!t) return ''; const d = new Date(t * 1000); return d.
 // Date and time on their own lines: a narrow column, never cut short.
 function timeCell(t) { if (!t) return ''; const d = new Date(t * 1000);
   return `${d.toLocaleDateString()}<span class="sub">${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>`; }
-function fmtDur(a, b) {
-  if (!a) return ''; const s = Math.max(0, Math.round(((b || Date.now() / 1000) - a)));
+function fmtDur(a, b, live = true) {
+  if (!a) return ''; if (!b && !live) return '\u2014';   // a finished run with no end time is not still counting
+  const s = Math.max(0, Math.round(((b || Date.now() / 1000) - a)));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
 }
 const STATE_CLASS = { done: 'ok', running: 'ok', paused: 'warn', pausing: 'warn', waiting: 'warn', partial: 'warn', clarify: 'warn', stopping: 'warn', interrupted: 'warn', stopped: 'warn', failed: 'bad' };
@@ -75,7 +76,7 @@ async function loadRuns() {
     if (!live && x.kind === 'crawl') acts.push(`<button class="secondary" data-act="rerun" data-id="${x.id}">Run again</button>`);
     if (!live) acts.push(`<button class="secondary" data-act="del" data-id="${x.id}">${armed.has(x.id) ? 'Click again to delete' : 'Delete'}</button>`);
     return `<tr><td class="nowrap">${timeCell(x.started)}</td><td class="nowrap">${x.kind === 'prompt' ? 'Prompt' : x.kind === 'batch' ? 'College list' : 'One website'}</td><td>${clamp(x.title, 3)}</td>
-      <td>${stateCell(x.state)}${x.error ? `<div class="muted clamp" title="${esc(x.error)}">${esc(x.error)}</div>` : ''}</td><td class="nowrap">${fmtDur(x.started, live ? null : x.finished)}</td>
+      <td>${stateCell(x.state)}${x.error ? `<div class="muted clamp" title="${esc(x.error)}">${esc(x.error)}</div>` : ''}</td><td class="nowrap">${fmtDur(x.started, live ? null : x.finished, live)}</td>
       <td>${x.faculty_saved}</td><td>${x.offices_saved}</td><td class="actions"><div class="btns">${acts.join('')}</div></td></tr>`;
   }).join('') || `<tr><td colspan="8" class="empty">No runs yet. Start one under <a href="#new">New run</a>.</td></tr>`;
 }

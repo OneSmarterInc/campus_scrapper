@@ -115,7 +115,8 @@ class PromptManager:
                     raise ValueError(f"Cannot {action} a run that is {state}")
                 active = self.current == job_id
                 next_state = ("pausing" if action == "pause" else "stopping") if active else ("paused" if action == "pause" else "stopped")
-                self.update(job_id, state=next_state, retry_at=None)
+                stamp = {} if active else {"finished": time.time()}
+                self.update(job_id, state=next_state, retry_at=None, **stamp)
                 if active:
                     self.stop.set()
             elif action == "resume":
@@ -368,12 +369,14 @@ class PromptManager:
         except ServiceWait as exc:
             if self.stop.is_set() or self.closed.is_set():
                 state = self.db.get(job_id)["state"]
-                self.update(job_id, state="stopped" if state == "stopping" else ("interrupted" if self.closed.is_set() else "paused"), retry_at=None)
+                self.update(job_id, state="stopped" if state == "stopping" else ("interrupted" if self.closed.is_set() else "paused"),
+                            retry_at=None, finished=time.time())  # the clock stops when the work stops
             else:
                 self.update(job_id, state="waiting", error=str(exc), retry_at=exc.retry_at)
         except Paused:
             state = self.db.get(job_id)["state"]
-            self.update(job_id, state="stopped" if state == "stopping" else ("interrupted" if self.closed.is_set() else "paused"), retry_at=None)
+            self.update(job_id, state="stopped" if state == "stopping" else ("interrupted" if self.closed.is_set() else "paused"),
+                        retry_at=None, finished=time.time())  # the clock stops when the work stops
         except ConfigurationError as exc:
             fail(str(exc))
         except Exception as exc:

@@ -170,6 +170,30 @@ def site_queries(kind="", location="", extra=()):
     return list(dict.fromkeys([q for q in [*extra, *base] if q and len(q) < 200]))
 
 
+# "Best Engineering College in Mumbai", "Top 10 Colleges", "No.1 University":
+# advertising copy and list-page headlines, never the name of a college.
+MARKETING_NAME = re.compile(
+    r"\b(?:best|top\s*\d*|no\.?\s*\d+|#\s*\d+|rank(?:ed|ing|ings)?|list\s+of|leading|finest|"
+    r"cheapest|affordable|popular|famous|compare|fees?\s+structure|admission\s*20\d\d|"
+    r"cut\s*off|counsell?ing|placement\s+(?:record|package)s?)\b", re.I)
+
+
+# "Engineering College", "Institute of Technology": the kind of place, with
+# nothing that says which one. Every real name carries something of its own.
+GENERIC_WORDS = {"the", "of", "and", "in", "for", "a", "an", "college", "colleges", "institute",
+                 "institutes", "university", "school", "academy", "polytechnic", "engineering",
+                 "technology", "technological", "science", "sciences", "management", "studies",
+                 "education", "arts", "commerce", "medical", "group", "campus"}
+
+
+def is_marketing(name):
+    """True when the text reads like a search headline rather than a college name."""
+    words = re.findall(r"[a-z]+", (name or "").casefold())
+    if not words or all(w in GENERIC_WORDS for w in words):
+        return True
+    return bool(MARKETING_NAME.search(name or ""))
+
+
 def names_from_results(results, limit=25):
     """College names suggested by result titles. A hint for the next search only.
 
@@ -180,7 +204,8 @@ def names_from_results(results, limit=25):
         title = str(item.get("title") or "")
         for match in NAME_IN_TITLE.finditer(title):
             name = " ".join(match.group(1).split()).strip(" ,-|")
-            if 8 <= len(name) <= 90 and name.casefold() not in {n.casefold() for n in names}:
+            if (8 <= len(name) <= 90 and not is_marketing(name)
+                    and name.casefold() not in {n.casefold() for n in names}):
                 names.append(name)
     return names[:limit]
 
@@ -228,7 +253,7 @@ def read_identity(page):
     name = ""
     for option in candidates:
         option = " ".join(str(option).split()).strip(" ,-|")
-        if 5 <= len(option) <= 90 and INSTITUTION_WORDS.search(option):
+        if 5 <= len(option) <= 90 and INSTITUTION_WORDS.search(option) and not is_marketing(option):
             name = option
             break
     for node in soup(["script", "style", "noscript", "svg"]):
@@ -261,9 +286,11 @@ def survey_site(homepage, make_crawler, kind="", location="", target="faculty", 
     people = result.faculty or result.doctors
     names = Counter(d.get("institution") for d in people if d.get("institution"))
     names.update(o.institution for o in result.offices if o.institution)
-    if not name:
-        name = next((n for n, _ in names.most_common() if INSTITUTION_WORDS.search(n)),
-                    next(iter(names), ""))
+    if not name:  # the site's own pages name it, as long as they name a college
+        name = next((n for n, _ in names.most_common()
+                     if INSTITUTION_WORDS.search(n) and not is_marketing(n)), "")
+    if not name:  # the web address is at least true; a search headline is not a name
+        name = host
     cities = Counter(d.get("city") for d in people if d.get("city"))
     city = home_city or next(iter(cities), "") or city_from(name) or ""
     pages_read = len(result.pages)
@@ -284,8 +311,10 @@ def survey_site(homepage, make_crawler, kind="", location="", target="faculty", 
     blob = " | ".join(filter(None, [name, home_text, *(d.get("department") or "" for d in people),
                                     *(d.get("designation") or "" for d in people),
                                     *(o.office_name or "" for o in result.offices)]))
-    if not name or not INSTITUTION_WORDS.search(name):
+    if not name or (name != host and not INSTITUTION_WORDS.search(name)):
         return None, Rejected(host, "No college or university name found on the site", name, city, pages_read)
+    if name == host:
+        college.evidence["name"] = "The site never states a plain college name; its web address is used instead"
     wanted_pages = faculty_urls if target != "offices" else office_urls
     if not wanted_pages:
         kinds = {"offices": "student office", "both": "faculty or student office"}.get(target, "faculty")

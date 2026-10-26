@@ -221,3 +221,42 @@ def test_one_slow_site_does_not_stop_the_others(campus_web, slow_site):
                                               max_searches=2, workers=4, site_seconds=4)
     assert [c.name for c in colleges] == ["Sunrise Institute of Technology"]
     assert any("too slowly" in r.reason for r in rejected)
+
+
+# ---- a search headline is not a college name -------------------------------------
+MARKETING = ("Best Engineering College in Mumbai", "Top 10 Engineering College in Mumbai",
+             "Best University in Mumbai | Admission 2026", "No.1 College in Pune",
+             "List of Engineering Colleges in Mumbai")
+REAL = ("Veermata Jijabai Technological Institute", "Sardar Patel Institute of Technology",
+        "Fr. Conceicao Rodrigues College of Engineering", "St. Francis Institute of Technology")
+
+
+@pytest.mark.parametrize("name", MARKETING)
+def test_advertising_headlines_are_not_treated_as_names(name):
+    from campusscraper.site_discovery import is_marketing
+    assert is_marketing(name)
+
+
+@pytest.mark.parametrize("name", REAL)
+def test_real_college_names_are_kept(name):
+    from campusscraper.site_discovery import is_marketing
+    assert not is_marketing(name)
+
+
+def test_headline_titles_are_never_lifted_as_college_names():
+    results = [{"title": "Best Engineering College in Mumbai - Admissions Open"},
+               {"title": "Top 10 Engineering Colleges in Mumbai 2026 | Collegedunia"},
+               {"title": "Sardar Patel Institute of Technology, Andheri - Mumbai"}]
+    assert names_from_results(results) == ["Sardar Patel Institute of Technology"]
+
+
+def test_a_site_whose_title_is_an_advertisement_is_named_by_its_address():
+    """A real college whose home page is titled for search engines, not for people."""
+    from campusscraper.models import Page
+    from campusscraper.site_discovery import read_identity
+    html = ("<html><head><meta property='og:site_name' content='Best Engineering College in Mumbai'>"
+            "<title>Top 10 Engineering College in Mumbai | Admission 2026</title></head>"
+            "<body><h1>Best Engineering College in Mumbai</h1><p>Andheri, Mumbai</p></body></html>")
+    name, city, _ = read_identity(Page("https://x.ac.in/", "https://x.ac.in/", 200, html))
+    assert name == ""          # nothing on the page is usable as a name
+    assert city == "Mumbai"

@@ -392,3 +392,50 @@ def test_batch_progress_tracks_every_college_in_upload_order(monkeypatch):
     status = web.batch_status(job.id)
     assert status["elapsed"] == 125
     assert [r["status"] for r in status["rows"]] == ["interrupted", "done", "not started"]
+
+
+def test_a_resumed_batch_continues_the_clock_instead_of_starting_it_again(monkeypatch):
+    """Resuming is the same piece of work carrying on, so elapsed carries on too."""
+    import time as _t
+
+    from campusscraper import web
+    from campusscraper.sources import Source
+
+    monkeypatch.setattr(web, "_safe", lambda *args, **kwargs: None)
+    sources = [Source(row=2, institution="First", urls=["https://first.example"])]
+    body = web.BatchIn(filename="test.csv", content_base64="")
+    first = web.BatchJob(body, sources)
+    monkeypatch.setitem(web.BATCHES, first.id, first)
+    first.started = _t.time() - 470          # as if it had been crawling for about 8 minutes
+    first.finished = _t.time()
+    spent = web.batch_status(first.id)["elapsed"]
+    assert 465 <= spent <= 475
+
+    resumed = web.BatchJob(body, sources, run_id=first.id, resume=True, seconds_already_spent=spent)
+    monkeypatch.setitem(web.BATCHES, resumed.id, resumed)
+    assert web.batch_status(resumed.id)["elapsed"] >= spent, "the timer restarted at zero"
+
+
+def test_a_stopped_prompt_run_stops_counting(tmp_path, monkeypatch):
+    """A run with no end time used to show a duration that kept growing."""
+    from campusscraper import prompt_jobs
+    from campusscraper.discovery_services import DiscoveryDB
+    from campusscraper.prompt_jobs import PromptIn, PromptManager
+    from campusscraper.store import Store
+
+    monkeypatch.setattr(prompt_jobs, "settings", lambda: {"ollama_configured": True,
+                                                          "groq_configured": False, "gemini_configured": False})
+    history = Store(tmp_path / "history.db")
+    db = DiscoveryDB(tmp_path / "prompt-discovery.db")
+    manager = PromptManager(db, history, tmp_path / "results")
+    monkeypatch.setattr(manager, "start_worker", lambda: None)
+    try:
+        job = manager.create(PromptIn(prompt="Find faculty pages for engineering colleges in Mumbai"))
+        manager.action(job["id"], "stop")
+        stopped = manager.db.get(job["id"])
+        assert stopped["state"] == "stopped"
+        assert stopped["finished"], "a stopped run must carry the time it stopped"
+    finally:
+        manager.close()
+        db.db.close()
+        history._db.close()
