@@ -16,7 +16,7 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 from pydantic import Field
 
-from .discovery_services import ConfigurationError, IncompleteSearch, Paused, ServiceWait
+from .discovery_services import ConfigurationError, IncompleteSearch, Paused, ServiceWait, SearchQualityError
 from .prompt_discovery import (
     ASSESS_INSTRUCTION, PLAN_INSTRUCTION, Contract, Decision, Evidence, Limits, Plan,
     Refinement, Report, safe_url,
@@ -164,8 +164,18 @@ def page_content(page, allow_local=False):
         if url and url not in seen:
             seen.add(url)
             links.append({"url": url, "label": a.get_text(" ", strip=True)[:100]})
-    relevant = re.compile(r"facult|staff|people|department|school|academics|about|contact|placement|higher.stud|international", re.I)
-    links.sort(key=lambda l: (not bool(relevant.search(l["url"] + " " + l["label"])), l["url"]))
+    def link_priority(link):
+        text = link["url"] + " " + link["label"]
+        # Direct staff links must survive the 20-link prompt budget even when
+        # a site has dozens of About/Academics navigation links.
+        if re.search(r"facult|staff|people|directory|placement|higher.stud|international", text, re.I):
+            return 0
+        if re.search(r"department|school|academics", text, re.I):
+            return 1
+        if re.search(r"about|contact", text, re.I):
+            return 2
+        return 3
+    links.sort(key=lambda link: (link_priority(link), link["url"]))
     links = [{"id": i, **l} for i, l in enumerate(links[:20])]
     chunks = [head_tail + " " + text[i:i+4000] for i in range(0, min(len(text), 24000), 4000)] or [head_tail]
     return text, chunks, links
@@ -312,6 +322,20 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                 except IncompleteSearch as exc:
                     urls, outcome = [], "incomplete"
                     work["incomplete"][query] = exc.retry_at
+                except SearchQualityError as exc:
+                    urls, outcome = [], "unrelated"
+                    work["incomplete"].pop(query, None)
+                    report.issues.append(f"Search query returned unrelated results: {query}")
+                    # A failed SERP is query-local. Try other planned queries and
+                    # bounded broad variants; preserve eligibility in the plan.
+                    broad = " ".join(c.prompt_quote for c in plan.criteria
+                                     if c.applies_to == "institution")
+                    recovery = relaxed_queries([query], work["searched"])
+                    if broad.strip():
+                        recovery.append(broad + " " + plan.target)
+                    for candidate in recovery:
+                        if candidate not in work["queries"] and candidate not in work["searched"]:
+                            work["queries"].append(candidate)
                 except ConfigurationError as exc:
                     urls, outcome, search_error = [], "failed", exc
                 if not repeated:
@@ -470,6 +494,8 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
         emit("searching", current="Waiting for incomplete search engines")
         raise ServiceWait("No matching sources yet and some searches were incomplete. Saved work will be retried",
                           max(time.time() + 5, min(work["incomplete"].values())))
+    if any(a["status"] == "unrelated" for a in report.search_attempts):
+        report.issues.append("Some queries returned unrelated results and were skipped; other queries were attempted")
     if any(a.get("unavailable_engines") or a["status"] == "incomplete" for a in report.search_attempts):
         report.issues.append("Some search engines were unavailable; usable results from other engines were retained")
     for query in work["incomplete"]:

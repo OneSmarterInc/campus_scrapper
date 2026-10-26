@@ -173,3 +173,23 @@ still require page verification. Sparse metadata and short queries remain eligib
 Live end-to-end validation remains blocked here: no configured Groq/Gemini key
 and no reachable SearXNG instance. The recorded-response replay and mocked
 recovery tests do not establish that the user's unavailable engines are restored.
+
+
+## Query-local recovery and navigation audit (2026-10-26)
+
+The follow-up screenshot exposed a regression in the quality gate: one unusable
+query terminated the entire job. SearchQualityError now denotes a query-local
+failure. Discovery records it, continues the other planned queries and adds
+bounded relaxed/institution-based queries within the existing search budget.
+Real configuration errors (e.g. JSON access refused) still stop with evidence.
+An all-unrelated run produces no candidates, rather than inventing URLs or
+repeatedly charging the model for bad pages.
+
+A second regression test covers 30 About links before a faculty link: staff
+navigation now survives the 20-link model budget. URL safety checks remain active.
+
+Validation: 199 Python tests and 8 DOM tests passed. Controlled recovery tests
+cover five distinct college pages, exhausted bad searches, configuration errors,
+and navigation crowding. Live fetches of SPIT, TSEC and VJTI were attempted but
+DNS resolution failed in this execution environment. No live Groq/SearXNG
+end-to-end success or production accuracy is claimed.

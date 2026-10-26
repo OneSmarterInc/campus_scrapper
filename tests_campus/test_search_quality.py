@@ -70,3 +70,92 @@ def test_fallback_outage_evidence_is_serializable(tmp_path):
         json.dumps(search.search_details)
         assert search.search_details[QUERY]['fallback_used']
     db.db.close()
+
+
+def test_discovery_continues_after_bad_first_query_to_five_sources(tmp_path):
+    from campusscraper.verified_discovery import discover_verified
+    from campusscraper.prompt_discovery import Limits
+    from test_prompt_discovery import Fetch, ScriptedModel, plan, decision
+    from test_prompt_workflow import REVIEW
+    urls = [f'https://college{i}.example/faculty' for i in range(5)]
+    calls = []
+    def handle(req):
+        calls.append(str(req.url))
+        if req.url.params['q'] == QUERY:
+            results = [BAD] if 'engines' not in req.url.params else []
+        else:
+            results = [dict(GOOD, url=u) for u in urls]
+        return httpx.Response(200, json={'results': results})
+    db = DiscoveryDB(tmp_path / 'db')
+    class CollegePages(Fetch):
+        def get(self, url):
+            page = super().get(url)
+            index = urls.index(url)
+            page.html = page.html.replace('Example Engineering College', f'Example Engineering College {index}')
+            return page
+    fetch = CollegePages()
+    events = []
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        search = CachedSearch(db, 'job', 'http://search.test', client=client)
+        model = ScriptedModel(plan(queries=[QUERY, 'Mumbai engineering college faculty'], requested_institutions=5,
+            criteria=[dict(id='location', requirement='Located in Mumbai', prompt_quote='Mumbai', applies_to='institution')]),
+            REVIEW, *[decision(institution=f'Example Engineering College {i}',
+                official_site_quote=f'Example Engineering College {i}',
+                evidence=[dict(criterion_id='location', quote='directory in Mumbai')]) for i in range(5)])
+        report = discover_verified('Find 5 engineering colleges in Mumbai', model, search, fetch,
+                                   Limits(rounds=1, searches=5), progress=events.append)
+    assert report.status == 'candidates_found'
+    assert {c['url'] for c in report.candidates} == set(urls)
+    assert report.search_attempts[0]['status'] == 'unrelated'
+    assert report.search_attempts[0]['rejected_results'] == [BAD]
+    assert len(fetch.urls) == 5
+    assert BAD['url'] not in fetch.urls
+    assert report.model_calls == 7  # plan/review plus five verified page decisions
+    db.db.close()
+
+
+def test_all_unrelated_queries_finish_with_no_fabricated_sources(tmp_path):
+    from campusscraper.verified_discovery import discover_verified
+    from campusscraper.prompt_discovery import Limits
+    from test_prompt_discovery import Fetch, ScriptedModel, plan
+    from test_prompt_workflow import REVIEW
+    db = DiscoveryDB(tmp_path / 'db')
+    calls = []
+    def handle(req):
+        calls.append(req)
+        return httpx.Response(200, json={'results': [BAD]})
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        search = CachedSearch(db, 'job', 'http://search.test', client=client)
+        fetch = Fetch()
+        report = discover_verified('Find engineering colleges in Mumbai',
+            ScriptedModel(plan(queries=[QUERY]), REVIEW), search, fetch, Limits(rounds=1, searches=2))
+    assert report.status == 'no_candidates' and not report.candidates
+    assert report.pages == 0 and report.model_calls == 2
+    assert report.searches == 2 and len(calls) == 4
+    assert not fetch.urls
+    db.db.close()
+
+
+def test_real_configuration_errors_still_stop_and_keep_evidence(tmp_path):
+    from campusscraper.verified_discovery import discover_verified
+    from test_prompt_discovery import Fetch, ScriptedModel, plan
+    from test_prompt_workflow import REVIEW
+    db = DiscoveryDB(tmp_path / 'db')
+    events = []
+    with httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(403))) as client:
+        search = CachedSearch(db, 'job', 'http://search.test', client=client)
+        with pytest.raises(ConfigurationError, match='JSON'):
+            discover_verified('Find engineering colleges', ScriptedModel(plan(), REVIEW), search, Fetch(), progress=events.append)
+    assert events[-1]['report']['search_attempts'][0]['status'] == 'failed'
+    db.db.close()
+
+
+def test_faculty_link_survives_large_about_navigation():
+    from campusscraper.verified_discovery import page_content
+    from campusscraper.models import Page
+    html = ''.join(f'<a href="/about/{i}">About {i}</a>' for i in range(30))
+    html += '<a href="/zz/faculty">Our faculty</a><a href="http://127.0.0.1/admin">Staff</a>'
+    _, _, links = page_content(Page('https://college.example/', 'https://college.example/', 200, html))
+    assert links[0]['url'] == 'https://college.example/zz/faculty'
+    assert len(links) == 20
+    assert all('127.0.0.1' not in l['url'] for l in links)

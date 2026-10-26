@@ -36,6 +36,10 @@ class ConfigurationError(Exception):
     pass
 
 
+class SearchQualityError(ConfigurationError):
+    """This query produced unusable results; other queries may still succeed."""
+
+
 class IncompleteSearch(ServiceWait):
     """A search returned no URLs with some engines down; other queries may work."""
 
@@ -364,7 +368,7 @@ class CachedSearch:
                 details["fallback_used"] = True
                 details["fallback_response"] = dict(self.search_details.get(query, {}))
             self.search_details[query] = details
-            raise ConfigurationError("Search returned unrelated results and alternative engines could not recover. "
+            raise SearchQualityError("Search returned unrelated results and alternative engines could not recover. "
                                      "Check SearXNG engine availability; no unrelated pages were sent to Groq.")
         if rejected and not urls:
             raise IncompleteSearch("Alternative search engines also returned unrelated results")
