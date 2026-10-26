@@ -152,6 +152,23 @@ download the evidence report to inspect the proposed criteria and failure detail
 After updating an older installation that reported "requirements were not
 grounded", restart the portal, hard-refresh the browser, and try the prompt again.
 
+Discovery now checkpoints its search queue, current page/chunk, related-page
+context and report counters. A quota wait or process restart continues that
+checkpoint instead of rebuilding discovery from zero. Terminal page failures
+(such as 403/challenge pages and 404s) are also cached for the run; transient
+fetch failures have a five-minute cache backoff. Cancelled fetches are not cached.
+The evidence report includes each query's returned URLs, titles/snippets and
+unavailable engine names, plus sources skipped before fetching. Reference and
+dictionary sites are skipped; relevant campus pages are ranked first and hosts
+are interleaved. These are selection hints, never substitutes for source evidence.
+When exact-phrase/TLD searches fail to find enough sources, another discovery
+round can relax search syntax while retaining all original eligibility criteria.
+
+After installing the discovery checkpoint fix, start a **new run** for the same
+prompt to refresh older search results and use the updated planner. Existing
+saved results remain intact. Per-minute quota waiting still applies: a connected
+Groq account and SearXNG service do not guarantee unlimited capacity or coverage.
+
 ## Command line alternative
 
 ```powershell

@@ -176,6 +176,76 @@ def test_page_checkpoint_replays_without_refetch(db):
     assert inner.calls == 1
 
 
+@pytest.mark.parametrize("status,error", [(403, "Access challenge"), (404, "HTTP 404"),
+                                         (200, "Site blocks automated access")])
+def test_terminal_page_failures_are_cached_across_fetcher_restart(db, status, error):
+    class Fetch:
+        cfg = object()
+        calls = 0
+        def get(self, url):
+            self.calls += 1
+            return Page(url, url, status, "", error=error)
+    inner = Fetch()
+    url = "https://college.example/faculty"
+    assert CachedFetcher(inner, db, "one").get(url).error == error
+    assert CachedFetcher(inner, db, "one").get(url).error == error
+    assert inner.calls == 1
+
+
+def test_transient_page_failures_can_retry_after_backoff(db, monkeypatch):
+    import campusscraper.discovery_services as services
+    clock = [1000.0]
+    monkeypatch.setattr(services.time, "time", lambda: clock[0])
+    class Fetch:
+        cfg = object()
+        calls = 0
+        def get(self, url):
+            self.calls += 1
+            return Page(url, url, 503, "", error="HTTP 503") if self.calls == 1 else Page(url, url, 200, "Faculty")
+    inner = Fetch()
+    fetch = CachedFetcher(inner, db, "one")
+    url = "https://college.example/faculty"
+    assert fetch.get(url).error
+    clock[0] += 60
+    assert fetch.get(url).error and inner.calls == 1
+    clock[0] += 300
+    assert not fetch.get(url).error and inner.calls == 2
+
+
+def test_cancelled_fetch_is_not_cached(db):
+    class Fetch:
+        cfg = object()
+        calls = 0
+        def get(self, url):
+            self.calls += 1
+            return Page(url, url, 0, "", error="stopped") if self.calls == 1 else Page(url, url, 200, "Faculty")
+    inner = Fetch()
+    fetch = CachedFetcher(inner, db, "one")
+    assert fetch.get("https://college.example/faculty").error == "stopped"
+    assert fetch.get("https://college.example/faculty").status == 200
+    assert inner.calls == 2
+
+
+def test_completed_fetch_is_saved_when_pause_arrives_during_request(db):
+    from campusscraper.discovery_services import Paused
+    controls = []
+    def control():
+        controls.append(True)
+        if len(controls) == 2:
+            raise Paused()
+    class Fetch:
+        cfg = object()
+        calls = 0
+        def get(self, url):
+            self.calls += 1
+            return Page(url, url, 200, "Faculty")
+    inner = Fetch()
+    with pytest.raises(Paused):
+        CachedFetcher(inner, db, "one", control).get("https://college.example/faculty")
+    assert CachedFetcher(inner, db, "one").get("https://college.example/faculty").status == 200
+    assert inner.calls == 1
+
+
 @pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fc00::1"])
 def test_dns_private_answers_rejected(monkeypatch, address):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 443))])

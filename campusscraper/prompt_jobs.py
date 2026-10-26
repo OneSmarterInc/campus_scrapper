@@ -151,12 +151,12 @@ class PromptManager:
                 raise Paused()
 
         def progress(event):
-            control()
             phase = event.pop("phase", "checking_pages")
             changes = {"phase": phase, "progress": event}
             if "report" in event:
                 changes["report"] = event.pop("report")
             self.update(job_id, **changes)
+            control()  # Persist the operation that just finished even if Pause was clicked.
 
         def fail(message):
             latest = self.db.get(job_id)
@@ -180,7 +180,9 @@ class PromptManager:
                 fetcher = CachedFetcher(Fetcher(ScrapeConfig(render=body.render, strict_public_network=True,
                     max_bytes=2_000_000, retries=1), self.stop), self.db, job_id, control)
                 report = discover_verified(body.prompt, model, search, fetcher,
-                    Limits(searches=body.searches, pages=body.discovery_pages, institutions=body.max_colleges, rounds=2), control, progress)
+                    Limits(searches=body.searches, pages=body.discovery_pages, institutions=body.max_colleges, rounds=2), control, progress,
+                    load_state=lambda: self.db.cached(job_id, "discovery_state_v1"),
+                    save_state=lambda state: self.db.cache(job_id, "discovery_state_v1", state))
                 self.db.cache(job_id, "discovery_report", asdict(report))
             self.update(job_id, report=asdict(report))
             if report.status != "candidates_found":

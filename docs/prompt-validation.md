@@ -1,5 +1,41 @@
 # Prompt discovery validation
 
+## 2026-10-26 — discovery relevance and resume correction
+
+The next supplied evidence report preserved sensible Pune/engineering queries,
+but showed zero pages and a `planning` report status after the screenshot had
+already shown five pages. Provider usage had increased to nine requests. Code
+inspection confirmed that discovery rebuilt its queue/report on every retry,
+while failed fetches were not cached. The screenshot also showed unrelated
+dictionary pages being fetched. The old export lacked returned search metadata,
+so it cannot establish which upstream engine produced those results or why.
+
+The fix saves the discovery queue, pending page/chunk, context and report together
+in SQLite, and commits each completed step before honoring a pause. Search metadata
+and skipped-source reasons are exported. Known dictionary hosts are excluded before
+fetch, result ranking uses query relevance without a college/city/TLD allowlist,
+and queries can relax exact-phrase/TLD syntax without weakening final eligibility.
+Permanent fetch failures are reused; transient errors have bounded cache backoff.
+
+- **190 Python tests passed**, including a new-process SQLite reopen during a
+  discovery quota wait that then completes actual local HTTP crawling, person
+  filtering and Excel export. No completed search, page fetch or planning call
+  repeats in that test; page counts never reset.
+- Other interruption tests cover multi-chunk pages, completed blocked pages,
+  pending searches, refinement, incomplete engines, and pause immediately after
+  a successful operation. A controlled SERP using the exact three supplied Pune
+  queries skips dictionary URLs and returns two observed campus candidates with
+  both institution-type and location evidence.
+- **8 DOM tests passed**; compilation and Git whitespace checks passed. The one
+  Starlette test-client deprecation warning remains. External proxy variables
+  were unset for the local HTTP tests, as in the earlier test run.
+
+No live provider credentials are available here. The controlled SERP/campus
+fixtures establish workflow behavior, not real-college recall, inference quality,
+or a measured speed/token improvement. Existing quota budgets are unchanged.
+Update and restart the Windows portal, then start a new run with the same prompt;
+the new report will expose returned sources and engine availability if needed.
+
 ## 2026-10-26 — planning failure correction
 
 The reported run stopped before search when a model-supplied `prompt_quote` did

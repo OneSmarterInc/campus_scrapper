@@ -195,6 +195,9 @@ def workflow(tmp_path, monkeypatch, site_url):
         elif name == "PlanReview":
             data = REVIEW.model_dump()
         elif name == "Decision":
+            if state.get("fail_discovery_once") and not state["failed"]:
+                state["failed"] = True
+                return httpx.Response(429, headers={"retry-after": "120"})
             data = decision(institution="Sunrise Institute of Technology", official_site_quote="Sunrise Institute of Technology", staff_page_quote="Our Faculty").model_dump()
         elif name == "RecordBatchDecision":
             if state["fail_filter_once"] and not state["failed"]:
@@ -289,6 +292,50 @@ def test_quota_during_plan_repair_resumes_without_repeating_initial_call(workflo
     assert saved["state"] in {"done", "partial"}, saved
     assert calls.count("Plan") == 3  # Initial + quota response + successful repair.
     assert len(saved["report"]["planning_attempts"]) == 2
+
+
+def test_discovery_quota_then_process_restart_preserves_page_and_finishes_excel(workflow, monkeypatch):
+    import campusscraper.prompt_jobs as jobs
+    manager, searches, calls, state = workflow
+    state["fail_discovery_once"] = True
+    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
+    manager.execute(job["id"])
+    waiting = manager.db.get(job["id"])
+    assert waiting["state"] == "waiting"
+    assert waiting["report"]["pages"] == 1 and waiting["report"]["status"] == "checking_pages"
+    assert waiting["report"]["search_attempts"]
+    assert manager.db.cached(job["id"], "discovery_state_v1")["work"]["pending"]["stage"] == "assess"
+    before_searches = len(searches)
+    # Reopen the actual SQLite journal to simulate a new process, not in-memory resume.
+    new_db = DiscoveryDB(manager.db.path)
+    resumed = PromptManager(new_db, manager.history, manager.out_dir)
+    monkeypatch.setattr(resumed, "start_worker", lambda: None)
+    monkeypatch.setattr(jobs.CachedSearch, "search", lambda *a: pytest.fail("Completed search was replayed"))
+    monkeypatch.setattr(jobs.CachedFetcher, "get", lambda *a: pytest.fail("Pending page bytes were refetched"))
+    reports = []
+    original_update = resumed.update
+    def capture(job_id, **values):
+        if "report" in values:
+            reports.append(values["report"])
+        return original_update(job_id, **values)
+    monkeypatch.setattr(resumed, "update", capture)
+    try:
+        new_db.cooldown("groq", 0)
+        resumed.action(job["id"], "resume")
+        resumed.execute(job["id"])
+        result = new_db.get(job["id"])
+        assert result["state"] in {"done", "partial"}, result
+        assert all(r["pages"] >= 1 for r in reports)
+        assert len(searches) == before_searches
+        assert calls.count("Plan") == calls.count("PlanReview") == 1
+        assert calls.count("Decision") == 2
+        wb = load_workbook(result["xlsx"], read_only=True, data_only=True)
+        data = json.dumps(list(wb["Faculty"].values))
+        assert "anitha.rao@sunrise-it.ac.in" in data and "rahul.v21" not in data
+        wb.close()
+    finally:
+        resumed.close()
+        new_db.db.close()
 
 
 def test_unfiltered_prompt_preserves_manual_crawler_contacts(workflow, site_url, tmp_path):

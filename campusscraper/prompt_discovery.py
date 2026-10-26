@@ -226,6 +226,8 @@ class Report:
     pages: int = 0
     model_calls: int = 0
     planning_attempts: list[dict] = field(default_factory=list)
+    search_attempts: list[dict] = field(default_factory=list)
+    skipped_sources: list[dict] = field(default_factory=list)
 
     def sources(self) -> list[Source]:
         """Candidate-source adapter; intentionally not called by the web UI.

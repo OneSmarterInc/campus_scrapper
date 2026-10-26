@@ -21,6 +21,7 @@ import httpx
 
 from .models import Page
 from .fetch import _ssl_verify
+from .search_candidates import rank_urls
 
 REVISION = 1
 
@@ -300,6 +301,7 @@ class CachedSearch:
         self.client = client or httpx.Client(timeout=35, follow_redirects=False, trust_env=False, verify=_ssl_verify())
         self.owns_client = client is None
         self.warnings = []
+        self.search_details = {}
 
     def close(self):
         if self.owns_client:
@@ -311,6 +313,7 @@ class CachedSearch:
         cached = self.db.cached(self.job, key)
         if cached is not None:
             self.warnings.extend(cached["warnings"])
+            self.search_details[query] = cached.get("details", {"results": [{"url": u} for u in cached["urls"]]})
             return cached["urls"]
         try:
             response = self.client.get(self.base_url + "/search", params={"q": query, "format": "json", "categories": "general"})
@@ -326,14 +329,28 @@ class CachedSearch:
             raise ServiceWait("Cannot reach SearXNG. Start the search service; progress is saved") from None
         except (ValueError, AttributeError):
             raise ConfigurationError("SearXNG did not return JSON search results. Check its URL and JSON format setting") from None
-        urls = [r["url"] for r in data["results"][:20] if isinstance(r, dict) and isinstance(r.get("url"), str)]
+        results = []
+        for r in data["results"][:60]:
+            if not isinstance(r, dict) or not isinstance(r.get("url"), str):
+                continue
+            if len(r["url"]) > 3000:
+                continue
+            results.append({"url": r["url"], "title": str(r.get("title") or "")[:250],
+                            "content": str(r.get("content") or "")[:800],
+                            "engines": [str(e)[:60] for e in (r.get("engines") or [])[:8]]})
+        by_url = {r["url"]: r for r in results}
+        urls = rank_urls(list(by_url), by_url, query)[:30]
+        unavailable = [str(e[0])[:60] for e in data.get("unresponsive_engines", [])
+                       if isinstance(e, (list, tuple)) and e]
+        details = {"results": [by_url[u] for u in urls], "unavailable_engines": unavailable}
+        self.search_details[query] = details
         warnings = []
         if data.get("unresponsive_engines"):
             if not urls:
                 raise IncompleteSearch("Search engines returned no usable results while some were unavailable; retry later")
             warnings = ["Some search engines were unavailable; usable results from other engines were retained"]
             self.warnings.extend(warnings)
-        self.db.cache(self.job, key, {"urls": urls, "warnings": warnings})
+        self.db.cache(self.job, key, {"urls": urls, "warnings": warnings, "details": details})
         return urls
 
 
@@ -346,10 +363,18 @@ class CachedFetcher:
         key = "page:" + digest(url)
         value = self.db.cached(self.job, key)
         if value is not None:
-            return Page(**value)
+            if "page" not in value:  # Successful checkpoints from older versions.
+                return Page(**value)
+            if value.get("retry_at") is None or value["retry_at"] > time.time():
+                return Page(**value["page"])
         page = self.inner.get(url)
         if not page.error and page.status == 200:
             self.db.cache(self.job, key, asdict(page))
+        elif page.error and "stopped" not in page.error.lower():
+            transient = page.status in (0, 408, 429) or page.status >= 500
+            self.db.cache(self.job, key, {"page": asdict(page),
+                                         "retry_at": time.time() + 300 if transient else None})
+        self.control()
         return page
 
     def close(self):
