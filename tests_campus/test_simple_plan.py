@@ -54,3 +54,41 @@ def test_wrong_city_cannot_pass_invented_location_evidence():
     report=discover_verified(PROMPT,ScriptedModel(d),Search(),fetch,Limits(rounds=1))
     assert not report.candidates
     assert report.attempts[0]['validation_error']
+
+
+def test_uploaded_student_directory_response_is_rejected():
+    html=('<h1>Example Engineering College</h1>'
+          '<p>Official website. Address: Mumbai, Maharashtra, India.</p>'
+          '<h2>Students</h2><p>Anitha Rao, second-year engineering student.</p>')
+    d=decision(staff_page_quote='Students Anitha Rao, second-year engineering student.',
+        evidence=[{'criterion_id':'institution_type','quote':'Engineering College'},
+                  {'criterion_id':'location','quote':'Mumbai'}])
+    report=discover_verified(PROMPT,ScriptedModel(d),Search(),Fetch(html),Limits(rounds=1))
+    assert not report.candidates
+    assert report.attempts[0]['validation_error']
+    assert 'not faculty/staff' in report.attempts[0]['reason']
+
+
+@pytest.mark.parametrize('quote', [
+    'Students Anitha Rao, second-year engineering student.',
+    'Alumni Anitha Rao, class of 2024.',
+    'Applicants Anitha Rao, application accepted.',
+])
+def test_nonstaff_population_cannot_be_faculty_evidence(quote):
+    from campusscraper.verified_discovery import _check_page
+    from test_prompt_discovery import plan
+    current='Example Engineering College ' + quote
+    with pytest.raises(ValueError,match='not faculty/staff'):
+        _check_page(decision(staff_page_quote=quote),plan(),current,[],[])
+
+
+@pytest.mark.parametrize('quote', [
+    'Professor Anitha Rao advises students.',
+    'Faculty coordinator for students: Anitha Rao.',
+    'Student affairs staff: Anitha Rao.',
+])
+def test_student_facing_staff_are_not_excluded(quote):
+    from campusscraper.verified_discovery import _check_page
+    from test_prompt_discovery import plan
+    current='Example Engineering College ' + quote
+    assert _check_page(decision(staff_page_quote=quote),plan(),current,[],[])==[]

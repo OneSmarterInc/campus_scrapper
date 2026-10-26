@@ -65,7 +65,7 @@ def main():
                 finally:
                     row['model_diagnostics'] = router.diagnostics
                     row['last_phase'] = checkpoints[-1].get('phase') if checkpoints else 'not_started'
-                    if checkpoints:
+                    if checkpoints and 'report' not in row:
                         row['partial_report'] = checkpoints[-1].get('report', {})
                     router.close()
                 row['seconds'] = round(time.monotonic()-started, 2)

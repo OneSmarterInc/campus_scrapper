@@ -318,3 +318,30 @@ Regression coverage includes the exact uploaded prompt, arbitrary cities and
 counts, exclusions/person filters falling through, and rejection of invented
 Mumbai evidence on a Pune page. Tests use controlled model page responses; actual
 0.6B page-classification quality still requires the local evaluator.
+
+
+## Student directory false acceptance in local 0.6B evaluation
+
+The latest uploaded report fragment begins during the wrong-city case; it does
+not contain the valid-faculty result. It confirms successful bounded planning and
+one Decision call per shown case. Wrong-city invented Mumbai evidence and empty
+homepage staff evidence were rejected by existing gates. The student case was
+incorrectly accepted: the model cited “Students Anitha Rao, second-year engineering
+student.” as staff evidence. Literal quote matching alone did not prevent this.
+
+Added a conservative veto for faculty/staff requests when the selected quote
+explicitly describes students/alumni/applicants without a staff-role signal. It
+preserves student-facing professor/coordinator/staff evidence and leaves office
+targets unchanged. This is a narrow rejection guard, not a general proof of
+semantic correctness. The exact false acceptance is covered by regression tests.
+Discovery revision increased so older accepted work checkpoints are not reused.
+Evaluation reports no longer duplicate a complete report under partial_report.
+
+The observed qwen3:0.6b responses are not reliable enough for unattended source
+acceptance. A larger local model such as qwen3:4b can be evaluated with the same
+checks, but its accuracy and performance have not been measured here. Do not
+weaken tests or call gate-blocked model errors correct model classifications.
+
+Validation for this guard: full suite 257 passed, one existing portal profile-count
+test failed; that test plus all 25 simple-plan/guard cases passed on targeted rerun
+(26 passed). The intermittent profile-count failure is not established as fixed.

@@ -254,6 +254,16 @@ def _check_page(decision, plan, current, related, links):
         raise ValueError("Institution identity has no literal evidence")
     if len(decision.staff_page_quote) < 3 or decision.staff_page_quote not in current:
         raise ValueError("Current page does not contain the quoted staff evidence")
+    # Literal text can still describe the wrong population. In particular a
+    # student directory is not faculty evidence, even on a /faculty URL.
+    quote = decision.staff_page_quote
+    nonstaff = re.search(r"\b(?:students?|alumni|applicants?)\b", quote, re.I)
+    staff_role = re.search(
+        r"\b(?:professors?|lecturers?|instructors?|teachers?|deans?|principals?|"
+        r"staff|employees?|librarians?|registrars?|technicians?|counsellors?|counselors?)\b"
+        r"|\bfaculty\s+(?:coordinator|advisor|adviser|members?)\b", quote, re.I)
+    if plan.target in {"faculty", "staff"} and nonstaff and not staff_role:
+        raise ValueError("Quoted evidence describes students, alumni or applicants, not faculty/staff")
     required = {c.id for c in plan.criteria if c.applies_to == "institution"}
     if len(decision.evidence) != len(required) or {e.criterion_id for e in decision.evidence} != required:
         raise ValueError("Every institutional requirement needs evidence")
@@ -312,7 +322,7 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                       progress=lambda e: None, load_state=lambda: None, save_state=lambda s: None):
     """Continue the saved queue/chunk after interruption, without replaying discovery."""
     limits = limits or Limits(searches=12, pages=60, institutions=10, rounds=2)
-    identity = {"revision": 3, "prompt": prompt, "limits": asdict(limits)}
+    identity = {"revision": 4, "prompt": prompt, "limits": asdict(limits)}
     saved = load_state()
     resume = bool(saved and saved.get("identity") == identity and saved.get("work"))
     report = Report(**saved["report"]) if resume else Report(prompt=prompt)
