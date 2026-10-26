@@ -22,6 +22,7 @@ from .prompt_discovery import (
     Refinement, Report, safe_url,
 )
 from .sources import Source
+from .simple_plan import simple_faculty_plan
 from .search_candidates import exclusion_reason, rank_urls, relaxed_queries
 
 class PlanReview(Contract):
@@ -267,6 +268,13 @@ def _check_page(decision, plan, current, related, links):
 
 def _interpret_plan(prompt, report, ask, emit):
     emit("planning")
+    plan = simple_faculty_plan(prompt)
+    if plan is not None:
+        report.plan = plan.model_dump()
+        report.planning_attempts.append({"attempt": 1, "method": "bounded_grammar",
+            "proposed_plan": plan.model_dump(), "grounding_errors": []})
+        emit("planning", current="Count, college type and city parsed directly")
+        return plan
     instruction = PLAN_INSTRUCTION + PLAN_EXTRA
     payload = {"original_prompt": prompt}
     for attempt in range(2):  # One repair only; quota waits reuse the journal.
@@ -304,7 +312,7 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                       progress=lambda e: None, load_state=lambda: None, save_state=lambda s: None):
     """Continue the saved queue/chunk after interruption, without replaying discovery."""
     limits = limits or Limits(searches=12, pages=60, institutions=10, rounds=2)
-    identity = {"revision": 2, "prompt": prompt, "limits": asdict(limits)}
+    identity = {"revision": 3, "prompt": prompt, "limits": asdict(limits)}
     saved = load_state()
     resume = bool(saved and saved.get("identity") == identity and saved.get("work"))
     report = Report(**saved["report"]) if resume else Report(prompt=prompt)

@@ -54,7 +54,11 @@ def main():
                     actual = bool(report.candidates)
                     plan = report.plan
                     location_preserved = any('mumbai' in c['prompt_quote'].lower() and c['applies_to']=='institution' for c in plan.get('criteria', []))
-                    passed = actual == expected and plan.get('requested_institutions') == 1 and location_preserved
+                    assessed = any(a['url'] == URL and not a.get('validation_error') for a in report.attempts)
+                    passed = (assessed and actual == expected
+                              and plan.get('requested_institutions') == 1 and location_preserved
+                              and plan.get('requested_people') is None
+                              and plan.get('requested_people_per_institution') is None)
                     row.update(passed=passed, accepted=actual, report=report.__dict__)
                 except Exception as exc:
                     row.update(passed=False, error=str(exc))

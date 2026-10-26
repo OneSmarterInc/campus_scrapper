@@ -347,3 +347,15 @@ explicit engine selections, which previously reintroduced Bing. Recovery also
 checks returned engine provenance. Engine error reasons are saved in evidence.
 External engine availability still depends on the local installation and network;
 this migration cannot guarantee that an upstream provider will accept requests.
+
+
+### Simple faculty URL requests
+
+Requests of the form `Find 20 engineering colleges in Mumbai and return their
+ official faculty directory URLs.` now use a complete, bounded grammar for count,
+college type and location. Quotes come directly from the prompt; people counts
+remain unset. No model planning or model plan-review calls are needed for this
+form. Every candidate still needs the existing page/evidence checks. Other
+wording, exclusions, email conditions, and person filters use the semantic planner;
+this is not a general natural-language parser. Keep the UI maximum colleges high
+enough for the requested count.

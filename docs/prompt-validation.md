@@ -297,3 +297,24 @@ are not reused. Existing evidence gates and the two-attempt bound remain intact.
 55 focused provider tests passed. This is a diagnostic/repair improvement, not a
 verified fix for the uploaded live failure; a rerun on the user's local Ollama is
 still required to determine the exact cause and whether repair succeeds.
+
+
+## Concrete local-model planning failure (uploaded 2026-10-26)
+
+The revised report showed zero searches and zero checked pages for all cases.
+Qwen3:0.6b pluralized the singular prompt quote, classified Mumbai as a page
+condition, and invented both a total and per-college people count of one. The
+repair repeated those mistakes. This is a planning failure, not a search failure.
+
+Added an exact full-request grammar for digit count + supported institution type
++ city + faculty URL output. Unmatched or complex prompts retain the existing
+model planner/reviewer. This avoids model quote/count generation for the common
+request; it does not loosen page evidence acceptance. Discovery checkpoint
+revision is bumped to avoid resuming older plans. The evaluator now also requires
+a completed, valid page assessment for negative cases; a failed model response
+can no longer count as a correct rejection.
+
+Regression coverage includes the exact uploaded prompt, arbitrary cities and
+counts, exclusions/person filters falling through, and rejection of invented
+Mumbai evidence on a Pune page. Tests use controlled model page responses; actual
+0.6B page-classification quality still requires the local evaluator.
