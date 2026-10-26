@@ -18,6 +18,9 @@ def exclusion_reason(url):
         return "Malformed source URL"
     if any(host == h or host.endswith("." + h) for h in REFERENCE_HOSTS):
         return "Reference/dictionary site, not an official campus staff source"
+    if any(host == h or host.endswith("." + h) for h in
+           ("scribd.com", "facultyplus.com", "collegedunia.com", "shiksha.com", "careers360.com")):
+        return "Third-party listings are not official campus faculty sources"
     return ""
 
 

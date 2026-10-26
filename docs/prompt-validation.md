@@ -221,3 +221,34 @@ not live-provider accuracy measurements. This environment has no configured
 Groq/Gemini credentials or reachable SearXNG, and direct college-domain DNS probes
 failed. Full live completion remains unverified; do not label this release a
 proven production accuracy result or an exhaustive security audit.
+
+
+## Discovery latency and literal evidence repair (2026-10-26)
+
+Run bae36f7d39 had 24 provider requests / 67,433 tokens for 11 fetched pages and
+no accepted sources; the screenshots later showed 25 requests / 70,956 tokens
+and roughly 20 minutes. Search was now finding faculty URLs. The next bottleneck
+was repeated 4,000-character fragment assessment and lost institutional evidence.
+
+Changes: one bounded 6,000-character literal evidence packet per page; navigation
+removed after link extraction; college logo alt text retained; focus excerpts
+include institution criteria, faculty and address text. Up to one observed
+same-origin contact/about/home link supplies a 2,200-character identity excerpt
+without a second model assessment. Redirects to other hosts cannot supply that
+identity. Identity fetches count against the discovery page budget. Known
+aggregators such as Scribd and FacultyPlus are excluded before fetching.
+
+Short literal headings (Faculty) and locations (Mumbai) are no longer rejected
+solely by an eight-character minimum. Quote normalization only restores case and
+whitespace from the actual source; paraphrases remain invalid. Invalid page
+proposals now retain validation diagnostics. The normal page-decision output
+reservation is 1,200 tokens, with the existing 2,000-token repair allowance.
+Provider rate limits are unchanged. Rejected pages with no requested follow-up
+links are not assessed again in refinement.
+
+214 Python tests passed, including long-page single-assessment, bounded evidence,
+identity/link/redirect safety, literal quoting, quota resume and actual local
+crawl-to-Excel integration. This proves bounded work in controlled fixtures, not
+a production completion time or live-college precision. Live Groq/SearXNG testing
+remains unavailable in this workspace. Start a new run after updating; discovery
+checkpoint revision changed to avoid reusing old multi-fragment state.

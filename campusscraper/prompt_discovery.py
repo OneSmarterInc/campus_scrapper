@@ -59,7 +59,7 @@ class Plan(Contract):
 
 class Evidence(Contract):
     criterion_id: str
-    quote: str = Field(min_length=8, max_length=700)
+    quote: str = Field(min_length=2, max_length=700)
 
 
 class Decision(Contract):

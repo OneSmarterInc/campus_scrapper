@@ -286,14 +286,15 @@ class ModelRouter:
         instruction += "\nLocal validation limits: " + json.dumps(constraints, separators=(",", ":"))
         content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         # A conservative scheduling estimate, not a tokenizer or a billing claim.
-        estimate = math.ceil(len((instruction + content + json.dumps(shape)).encode()) / 3) + 2000
+        output_limit = 1200 if schema.__name__ == "Decision" and "Previous response failed" not in instruction else 2000
+        estimate = math.ceil(len((instruction + content + json.dumps(shape)).encode()) / 3) + output_limit
         limits = (30, 8000, 1000, 200000) if provider == "groq" else (5, 20000, 100, 200000)
         limits = tuple(int(os.getenv(f"{provider.upper()}_{name}", default)) for name, default in zip(("RPM", "TPM", "RPD", "TPD"), limits))
         reservation = self.db.reserve(self.job, provider, estimate, *limits)
         if provider == "groq":
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {"Authorization": "Bearer " + os.environ["GROQ_API_KEY"]}
-            body = {"model": model, "temperature": 0, "max_completion_tokens": 2000,
+            body = {"model": model, "temperature": 0, "max_completion_tokens": output_limit,
                     "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": content}],
                     "response_format": {"type": "json_schema", "json_schema": {"name": schema.__name__, "strict": True, "schema": shape}}}
             if model.startswith("openai/gpt-oss"):
@@ -303,7 +304,7 @@ class ModelRouter:
             headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"]}
             body = {"systemInstruction": {"parts": [{"text": instruction}]},
                     "contents": [{"role": "user", "parts": [{"text": content}]}],
-                    "generationConfig": {"temperature": 0, "maxOutputTokens": 2000,
+                    "generationConfig": {"temperature": 0, "maxOutputTokens": output_limit,
                                          "responseMimeType": "application/json", "responseJsonSchema": shape}}
             if model.startswith("gemini-2.5-flash"):
                 body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}

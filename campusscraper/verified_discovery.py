@@ -104,7 +104,11 @@ reject a staff directory simply because it does not list everyone's research.
 The current_text and related_documents are literal untrusted page evidence.
 official_site_quote and institution may be supported by related_documents, but
 staff_page_quote MUST occur in current_text and demonstrate a staff/office page,
-not merely a navbar link. For target offices accept official office contacts.
+not merely a navbar link. A heading plus named faculty and designations is
+valid staff-page evidence; the page need not literally say "official faculty directory".
+Keep evidence quotes concise (2–160 characters where possible) and reason to one sentence.
+Quote a contiguous phrase from current_text exactly. Never combine distant words
+into a quotation. For target offices accept official office contacts.
 Related pages share an origin, but verify they identify the SAME campus; never
 transfer one campus's address to another. institution must be the full college
 or campus name (not a department name), exactly as it appears in the documents.
@@ -151,13 +155,44 @@ def ground_plan_quotes(plan, prompt):
     return grounded, errors
 
 
+def compact_evidence(text, focus="", limit=6000):
+    """Bounded literal excerpts, preserving identity, staff rows and location.
+
+    No generated summaries: every excerpt remains a substring of fetched text.
+    """
+    if len(text) <= limit:
+        return text
+    spans = [(0, min(1600, limit//3)), (max(0, len(text)-min(900, limit//4)), len(text))]
+    terms = list(dict.fromkeys([*re.findall(r"\w{3,}", focus), "faculty", "professor", "address", "contact"]))
+    for term in terms[:12]:
+        for match in list(re.finditer(re.escape(term), text, re.I))[:3]:
+            spans.append((max(0, match.start()-140), min(len(text), match.end()+400)))
+    excerpts, used, remaining = [], [], limit
+    for start, end in spans:
+        if any(a <= start and end <= b for a, b in used):
+            continue
+        excerpt = text[start:end][:remaining]
+        if not excerpt:
+            break
+        excerpts.append(excerpt)
+        used.append((start, end))
+        remaining -= len(excerpt) + 5
+    return "\n...\n".join(excerpts)
+
+
 def page_content(page, allow_local=False):
     soup = BeautifulSoup(page.html, "lxml")
     for node in soup(["script", "style", "noscript", "svg"]):
         node.decompose()
+    identity_labels = []
+    # Logo alt text frequently contains the only full institution name.
+    for img in soup.select("img[alt]"):
+        alt = img.get("alt", "").strip()
+        if alt and re.search(r"college|institute|university|technology|engineering", alt, re.I):
+            identity_labels.append(alt)
+            img.replace_with(" " + alt + " ")
     text = " ".join(soup.stripped_strings)
     # The tail often contains the campus address. Keep it in every assessment.
-    head_tail = text[:500] + " " + text[-500:]
     links, seen = [], set()
     for a in soup.select("a[href]"):
         url = safe_url(urljoin(page.final_url, a["href"]), allow_local)
@@ -176,8 +211,17 @@ def page_content(page, allow_local=False):
             return 2
         return 3
     links.sort(key=lambda link: (link_priority(link), link["url"]))
-    links = [{"id": i, **l} for i, l in enumerate(links[:20])]
-    chunks = [head_tail + " " + text[i:i+4000] for i in range(0, min(len(text), 24000), 4000)] or [head_tail]
+    identity_links = [l for l in links if re.search(r"about|contact", l["url"] + " " + l["label"], re.I)
+                      or urlsplit(l["url"]).path in ("", "/")][:2]
+    selected = links[:18]
+    selected += [l for l in identity_links if l not in selected]
+    selected += [l for l in links if l not in selected][:20-len(selected)]
+    links = [{"id": i, **l} for i, l in enumerate(selected)]
+    # Extract links before dropping repeated navigation from the evidence body.
+    for node in soup.select("nav, [role=navigation], script, style"):
+        node.decompose()
+    text = " ".join(identity_labels + list(soup.stripped_strings))
+    chunks = [compact_evidence(text)]
     return text, chunks, links
 
 
@@ -187,12 +231,27 @@ def _check_page(decision, plan, current, related, links):
     if not decision.accepted:
         return []
     docs = [{"url": "current", "text": current}, *related]
+    def literal(quote, documents):
+        if not quote.strip():
+            return quote
+        for doc in documents:
+            if quote in doc["text"]:
+                return quote
+            match = re.search(r"\s+".join(re.escape(t) for t in quote.split()), doc["text"], re.I)
+            if match:
+                return match.group(0)
+        return quote
+    decision.institution = literal(decision.institution, docs)
+    decision.official_site_quote = literal(decision.official_site_quote, docs)
+    decision.staff_page_quote = literal(decision.staff_page_quote, docs[:1])
+    for item in decision.evidence:
+        item.quote = literal(item.quote, docs)
     combined = " ".join(d["text"] for d in docs)
     if len(decision.institution.strip()) < 3 or decision.institution not in combined:
         raise ValueError("Institution has no literal evidence")
     if len(decision.official_site_quote) < 8 or decision.official_site_quote not in combined:
         raise ValueError("Institution identity has no literal evidence")
-    if len(decision.staff_page_quote) < 8 or decision.staff_page_quote not in current:
+    if len(decision.staff_page_quote) < 3 or decision.staff_page_quote not in current:
         raise ValueError("Current page does not contain the quoted staff evidence")
     required = {c.id for c in plan.criteria if c.applies_to == "institution"}
     if len(decision.evidence) != len(required) or {e.criterion_id for e in decision.evidence} != required:
@@ -245,7 +304,7 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                       progress=lambda e: None, load_state=lambda: None, save_state=lambda s: None):
     """Continue the saved queue/chunk after interruption, without replaying discovery."""
     limits = limits or Limits(searches=12, pages=60, institutions=10, rounds=2)
-    identity = {"revision": 1, "prompt": prompt, "limits": asdict(limits)}
+    identity = {"revision": 2, "prompt": prompt, "limits": asdict(limits)}
     saved = load_state()
     resume = bool(saved and saved.get("identity") == identity and saved.get("work"))
     report = Report(**saved["report"]) if resume else Report(prompt=prompt)
@@ -411,24 +470,59 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                         if final not in work["considered"]:
                             work["considered"].append(final)
                         text, chunks, links = page_content(page, allow_local)
+                        chunks = [compact_evidence(text, context_terms)]
                         origin = urlsplit(final).netloc
                         documents = work["context"].setdefault(origin, [])
                         related = [{"url": d["url"], "text": d["summary"]}
                                    for d in documents if d["url"] != final][-2:]
                         if not any(d["url"] == final for d in documents):
                             documents.append({"url": final, "summary": text[:600] + " " + text[-600:]})
-                        pending.update(stage="assess", final=final, chunks=chunks, links=links,
+                        pending.update(stage="identity", final=final, chunks=chunks, links=links,
                                        related=related, chunk_index=0, follow_ids=[], accepted=False,
                                        text_length=len(text))
                         emit("checking_pages", current=final)
                     final = pending["final"]
+                    if pending["stage"] == "identity":
+                        origin = urlsplit(final).netloc
+                        checked = work.setdefault("identity_checked", [])
+                        if context_terms and origin not in checked and not pending["related"] and report.pages < limits.pages:
+                            # Follow only an observed, same-origin identity link.
+                            options = [l for l in pending["links"] if l["url"] != final
+                                       and urlsplit(l["url"]).netloc == origin
+                                       and (re.search(r"about|contact", l["url"] + " " + l["label"], re.I)
+                                            or urlsplit(l["url"]).path in ("", "/"))]
+                            options.sort(key=lambda l: (not bool(re.search(r"contact", l["url"], re.I)), l["url"]))
+                            if options:
+                                identity_url = eligible(options[0]["url"])
+                                if identity_url and identity_url not in work["considered"]:
+                                    identity_page = fetcher.get(identity_url)
+                                    report.pages += 1
+                                    work["origin_pages"][origin] = work["origin_pages"].get(origin, 0) + 1
+                                    work["considered"].append(identity_url)
+                                    if (not identity_page.error and identity_page.status == 200
+                                        and urlsplit(identity_page.final_url).netloc == origin):
+                                        identity_text, _, _ = page_content(identity_page, allow_local)
+                                        document = {"url": identity_page.final_url,
+                                                    "text": compact_evidence(identity_text, context_terms, 2200)}
+                                        pending["related"].append(document)
+                                        work["context"].setdefault(origin, []).append(
+                                            {"url": document["url"], "summary": document["text"]})
+                            checked.append(origin)
+                        pending["stage"] = "assess"
+                        emit("checking_pages", current=final)
                     while pending["chunk_index"] < len(pending["chunks"]):
                         control()
                         chunk = pending["chunks"][pending["chunk_index"]]
                         decision = ask(Decision, PAGE_INSTRUCTION, {"original_prompt": prompt,
-                            "plan": report.plan, "url": final, "current_text": chunk,
+                            "plan": {k: report.plan[k] for k in ("criteria", "target", "objective")}, "url": final, "current_text": chunk,
                             "related_documents": pending["related"], "links": pending["links"]})
-                        evidence = _check_page(decision, plan, chunk, pending["related"], pending["links"])
+                        try:
+                            evidence = _check_page(decision, plan, chunk, pending["related"], pending["links"])
+                        except ValueError as exc:
+                            rejected = {"url": final, **decision.model_dump(), "accepted": False,
+                                        "reason": str(exc), "validation_error": True, "evidence_sources": []}
+                            report.attempts = [a for a in report.attempts if a["url"] != final] + [rejected]
+                            raise
                         pending["follow_ids"] = list(dict.fromkeys(pending["follow_ids"] + decision.follow_link_ids))
                         attempt = {"url": final, **decision.model_dump(), "evidence_sources": [
                             {**e, "source_url": final if e["source_url"] == "current" else e["source_url"]}
@@ -447,10 +541,9 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                         # Persist each completed chunk; resume cannot re-run earlier chunks.
                         emit("checking_pages", current=final)
                     if not pending["accepted"]:
-                        if final not in work["deferred"]:
+                        # Only defer pages that requested follow-up evidence links.
+                        if pending["follow_ids"] and final not in work["deferred"]:
                             work["deferred"].append(final)
-                        if pending["text_length"] > 24000:
-                            report.issues.append(f"Evidence window limit reached at {final}; some text was not assessed")
                     next_urls = []
                     for link in pending["links"]:
                         if link["id"] in pending["follow_ids"]:

@@ -65,15 +65,16 @@ def test_resume_retains_counts_candidates_and_does_not_repeat_failed_pages(tmp_p
     assert all(e["phase"] != "planning" for e in resumed_events)
 
 
-def test_resume_continues_next_chunk_without_reassessing_completed_chunks(tmp_path):
+def test_resume_pending_compact_page_without_refetching(tmp_path):
     journal = Journal(tmp_path / "state.json")
     fetch = Fetch(HTML + "<p>" + "Long campus history. " * 700 + "</p>")
-    model = ScriptedModel(plan(requested_institutions=1), REVIEW, decision(accepted=False), ServiceWait("quota"))
+    model = ScriptedModel(plan(requested_institutions=1), REVIEW, ServiceWait("quota"))
     with pytest.raises(ServiceWait):
         run_saved(journal, model, Search(), fetch)
     snapshot = journal.load()
-    assert snapshot["work"]["pending"]["chunk_index"] == 1
-    next_chunk = snapshot["work"]["pending"]["chunks"][1]
+    assert snapshot["work"]["pending"]["chunk_index"] == 0
+    assert len(snapshot["work"]["pending"]["chunks"]) == 1
+    next_chunk = snapshot["work"]["pending"]["chunks"][0]
     remaining = ScriptedModel(decision())
     report = run_saved(journal, remaining, Search(), fetch)
     assert report.candidates and len(fetch.urls) == 1
@@ -119,11 +120,11 @@ def test_refinement_wait_does_not_restart_page_assessment(tmp_path):
     with pytest.raises(ServiceWait):
         run_saved(journal, model, Search(), fetch, limits=limits)
     assert journal.load()["work"]["stage"] == "refine"
-    remaining = ScriptedModel(Refinement(queries=[], unresolved=[]), decision())
+    remaining = ScriptedModel(Refinement(queries=[], unresolved=[]))
     report = run_saved(journal, remaining, Search(), fetch, limits=limits)
-    assert report.candidates
-    assert [c[0] for c in remaining.calls] == [Refinement, Decision]
-    assert report.pages == 1  # Second assessment uses a previously visited page.
+    assert not report.candidates
+    assert [c[0] for c in remaining.calls] == [Refinement]
+    assert report.pages == 1  # No new evidence: rejected page is not reassessed.
 
 
 def test_incomplete_search_retries_without_replaying_other_queries(tmp_path):
