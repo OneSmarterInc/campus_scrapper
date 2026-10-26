@@ -20,6 +20,7 @@ from .extract import extract_page
 from .fetch import Fetcher, normalize_url
 from . import relevance
 from .models import OfficeRecord, Page, PersonRecord, PageResult
+from .name_suffix import strip_shared_name_suffix
 from .profile import add_contacts, clean_fields
 from .vocab import (
     FOCUS_URL_HINTS, LINK_TEXT_HINTS, LISTING_URL_HINTS, OFFICE_URL_HINTS, PAGINATION_RE, PROFILE_URL_HINTS, SKIP_URL,
@@ -88,9 +89,18 @@ class Merger:
                 h1, h2 = (cand.get("institution") or "").lower(), (rec.get("institution") or "").lower()
                 same_hosp = not h1 or not h2 or h1[:12] == h2[:12] or h1 in h2 or h2 in h1
                 s1, s2 = cand.source_institution, rec.source_institution
-                same_hosp = same_hosp and (not s1 or not s2 or s1 == s2)
                 u1, u2 = url_key(cand.profile_url), key_u
                 c1, c2 = cand.get("city"), rec.get("city")
+                # A card and a profile on one site can label the institution differently
+                # ('IIT Bombay' / 'Indian Institute of Technology Bombay'). With the same full name,
+                # the same site and the same city, the label is not evidence of two people.
+                host1 = (urlsplit(cand.source_url).hostname or "").lower().removeprefix("www.")
+                host2 = (urlsplit(rec.source_url).hostname or "").lower().removeprefix("www.")
+                same_city = bool(c1 and c2 and c1.strip().casefold() == c2.strip().casefold())
+                card_profile = {cand.page_type, rec.page_type} == {"listing", "profile"}
+                if is_exact and len(key_n) >= 8 and card_profile and host1 and host1 == host2 and same_city:
+                    same_hosp = True
+                same_hosp = same_hosp and (not s1 or not s2 or s1 == s2)
                 # A link to the doctor's own off-site website is not a second profile on this site.
                 urls_ok = not u1 or not u2 or u1 == u2 or u1.split("/", 1)[0] != u2.split("/", 1)[0]
                 if is_exact:
@@ -488,6 +498,13 @@ class Crawler:
             self.fetcher.close()
         fetched = state["fetched"]
         result.doctors = self.merger.records
+        if strip_shared_name_suffix(result.doctors):
+            # 'Dr. Anitha Rao PESU' (card) and 'Dr. Anitha Rao' (profile) only meet once the acronym is gone.
+            remerge = Merger()
+            for d in result.doctors:
+                remerge.add(d)
+            self.merger = remerge
+            result.doctors = remerge.records
         result.offices = self.offices
         caller_targets = relevance.targets()  # this thread may belong to the caller: put its filter back after
         relevance.set_targets(self.cfg.departments)

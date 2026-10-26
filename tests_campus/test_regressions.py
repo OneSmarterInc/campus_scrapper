@@ -519,3 +519,96 @@ def test_a_page_that_already_has_its_people_is_not_rendered_again(monkeypatch):
     monkeypatch.setattr(crawler.fetcher, "render_now", lambda page: calls.append(page) or None)
     crawler.run(["https://example.ac.in/faculty"])
     assert calls == [], "the browser was started for a page that was already complete"
+
+
+def _labelled(name, institution, url, page_type, city="Mumbai"):
+    r = PersonRecord(source_url=url, profile_url=url if page_type == "profile" else None, page_type=page_type)
+    r.set("name", name, "h1", name, url)
+    r.set("institution", institution, "patterns", institution, url)
+    r.set("city", city, "patterns", city, url)
+    r.set("designation", "Professor", "labels")
+    return r
+
+
+def test_card_and_profile_merge_when_institution_is_written_differently():
+    # The card says 'IIT Bombay', the profile says the full name; the first 12 characters differ.
+    for reverse in (False, True):
+        card = _labelled("Dr. Anitha Rao", "IIT Bombay", "https://www.iitb.ac.in/cse/faculty", "listing")
+        card.set("email", "anitha@iitb.ac.in", "listing_card")
+        profile = _labelled("Dr. Anitha Rao", "Indian Institute of Technology Bombay", "https://iitb.ac.in/people/anitha", "profile")
+        m = Merger()
+        for r in ((profile, card) if reverse else (card, profile)):
+            m.add(r)
+        assert len(m.records) == 1, reverse
+        merged = m.records[0]
+        assert merged.page_type == "profile"
+        assert merged.get("institution") == "Indian Institute of Technology Bombay"
+        assert "anitha@iitb.ac.in" in merged.get("email")
+
+
+def test_institution_variant_merge_needs_same_site_city_and_full_name():
+    for change in ("city", "missing_city", "host", "name", "two_profiles", "source_institution"):
+        card = _labelled("Dr. Anitha Rao", "IIT Bombay", "https://iitb.ac.in/cse/faculty", "listing")
+        profile = _labelled("Dr. Anitha Rao", "Indian Institute of Technology Bombay", "https://iitb.ac.in/people/anitha", "profile")
+        if change == "city":
+            profile.values["city"] = "Delhi"
+        elif change == "missing_city":
+            profile.values.pop("city")
+        elif change == "host":
+            profile.source_url = "https://other.ac.in/people/anitha"
+        elif change == "name":
+            profile.values["name"] = "Dr. Anita Rao"
+        elif change == "two_profiles":
+            card.page_type = "profile"
+            card.profile_url = card.source_url
+        else:
+            card.source_institution, profile.source_institution = "College A", "College B"
+        m = Merger()
+        m.add(card)
+        m.add(profile)
+        assert len(m.records) == 2, change
+
+
+def test_acronym_glued_to_several_names_is_stripped_sitewide():
+    from campusscraper.name_suffix import strip_shared_name_suffix, trailing_acronym
+    assert trailing_acronym("Dr. Anitha Rao PESU") == "PESU"
+    assert trailing_acronym("Mrs. Lakshmi DEVI") is None       # surname in caps
+    assert trailing_acronym("DR. ANITHA RAO PESU") is None     # whole name in caps
+    assert trailing_acronym("Dr. Anitha Rao PhD") is None      # a degree
+    recs = [_labelled("Dr. Anitha Rao PESU", "PES University", "https://pes.edu/faculty", "listing"),
+            _labelled("Prof. K. Srinivas PESU", "PES University", "https://pes.edu/faculty", "listing")]
+    assert strip_shared_name_suffix(recs) == {"PESU": 2}
+    assert [r.get("name") for r in recs] == ["Dr. Anitha Rao", "Prof. K. Srinivas"]
+    only = [_labelled("Dr. Anitha Rao PESU", "PES University", "https://pes.edu/faculty", "listing")]
+    assert strip_shared_name_suffix(only) == {} and only[0].get("name") == "Dr. Anitha Rao PESU"
+
+
+def test_crawl_strips_shared_acronym_and_merges_card_with_profile(monkeypatch):
+    import campusscraper.crawl as crawl_mod
+    base = "https://acr.example"
+    pages = {
+        f"{base}/faculty": "<h1>Faculty</h1>" + "".join(
+            f'<div class="card"><h3>Dr. {n} PESU</h3><p>Assistant Professor, Computer Science and Engineering</p></div>'
+            for n in ("Anitha Rao", "Priya Sharma", "Rajesh Kumar")) + '<a href="/people/anitha-rao">Profile</a>',
+        f"{base}/people/anitha-rao": "<h1>Dr. Anitha Rao</h1><p>Assistant Professor, Computer Science and Engineering</p>"
+                                     "<p>Email: anitha.rao@acr.example</p>",
+    }
+
+    class FakeFetcher:
+        requests_made = 0
+        _robots = {}
+        def __init__(self, cfg, *a, **k): pass
+        def get(self, url, *a, **kw):
+            html = pages.get(url.rstrip("/"))
+            return Page(url, url, 200 if html else 404, f"<html><body>{html}</body></html>" if html else "")
+        def close(self): pass
+        def robots_for(self, url):
+            from campusscraper.robots import AllowAll
+            return AllowAll()
+
+    monkeypatch.setattr(crawl_mod, "Fetcher", FakeFetcher)
+    result = Crawler(ScrapeConfig(delay_seconds=0, render="never", use_sitemaps=False, max_pages=10)).run([f"{base}/faculty"])
+    names = sorted(d.get("name") for d in result.doctors)
+    assert names == ["Dr. Anitha Rao", "Dr. Priya Sharma", "Dr. Rajesh Kumar"], names
+    anitha = next(d for d in result.doctors if d.get("name") == "Dr. Anitha Rao")
+    assert anitha.page_type == "profile" and anitha.get("email") == "anitha.rao@acr.example"
