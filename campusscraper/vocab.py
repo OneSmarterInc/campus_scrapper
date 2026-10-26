@@ -125,6 +125,15 @@ NOT_A_PERSON = {
     "excellence", "endowment", "puraskar", "samman", "foundation", "trust", "charitable", "chair", "auditorium",
     "hall", "block", "building", "library", "road", "marg", "nagar", "college", "university", "institute", "school",
 }
+# Section headings on a CV page, read as if they were the person's name.
+HEADING_WORDS = {
+    "professional", "summary", "biography", "biodata", "bio", "overview", "introduction", "objective",
+    "about", "education", "educational", "experience", "experiences", "qualification", "qualifications",
+    "publication", "publications", "achievement", "achievements", "responsibility", "responsibilities",
+    "skills", "expertise", "membership", "memberships", "award", "awards", "patent", "patents",
+    "workshop", "workshops", "seminar", "conference", "conferences", "project", "projects", "subject",
+    "subjects", "teaching", "administrative", "personal", "curriculum", "vitae", "resume", "cv",
+}
 _NAME_STOP_LOWER = {w.lower() for w in NAME_STOP}
 _QUALS_UPPER = {q.upper() for q in QUALIFICATIONS}
 _ROLE_WORD = re.compile(r"(?:olog(?:y|ist|ical)|ics|ical|ering|ment)$", re.I)
@@ -138,11 +147,15 @@ def clean_name(raw: str) -> str | None:
         tokens = [t if len(t.strip(".")) <= 1 or "." in t.strip(".") else t.capitalize() for t in tokens]
     while tokens and tokens[0].strip(".,").lower() in _HONORIFIC_WORDS:
         tokens = tokens[1:]
+    if tokens and tokens[0].strip(".,()").split("-")[0].lower() in HEADING_WORDS:
+        return None  # "Professional Summary", "Educational Qualifications": a heading, not a person
     out: list[str] = []
     for tok in tokens:
         bare = tok.strip(".,")
         if bare.strip("()").lower() in NOT_A_PERSON:
             return None
+        if bare.split("-")[0].lower() in _NAME_STOP_LOWER and len(bare.split("-")) > 1:
+            break  # "Dean-Student", "Head-Academics": a role written with a hyphen
         if bare.endswith("'s") and bare[:-2].lower() in _NAME_STOP_LOWER:
             break
         if (bare.lower() in _NAME_STOP_LOWER and not (bare.lower() == "more" and out)) or bare.upper() in _QUALS_UPPER:
@@ -156,6 +169,8 @@ def clean_name(raw: str) -> str | None:
     letters = [t for t in out if len(t.strip(".")) > 1]
     if not letters or len(name) < 3 or len(name) > 60:
         return None
+    if len(out) == 1 and _ROLE_WORD.search(name):
+        return None  # "Biotechnology", "Management": a subject standing alone is not a person
     return name
 
 
@@ -262,6 +277,27 @@ INSTITUTION_WORDS = re.compile(
     r"IIIT|IISc|IISER|BITS|Polytechnic|Deemed)\b")
 # kept for code shared with the hospital scraper
 HOSPITAL_WORDS = INSTITUTION_WORDS
+
+# "Best Engineering College in Mumbai", "Top 10 Colleges 2026": advertising copy
+# and search-result headlines, never the name of a college.
+MARKETING_NAME = re.compile(
+    r"\b(?:best|top\s*\d*|no\.?\s*\d+|#\s*\d+|rank(?:ed|ing|ings)?|list\s+of|leading|finest|"
+    r"cheapest|affordable|popular|famous|compare|fees?\s+structure|admission\s*20\d\d|"
+    r"cut\s*off|counsell?ing|placement\s+(?:record|package)s?)\b", re.I)
+# "Engineering College", "Institute of Technology": the kind of place, with
+# nothing that says which one. Every real name carries something of its own.
+GENERIC_NAME_WORDS = {"the", "of", "and", "in", "for", "a", "an", "college", "colleges", "institute",
+                      "institutes", "university", "school", "academy", "polytechnic", "engineering",
+                      "technology", "technological", "science", "sciences", "management", "studies",
+                      "education", "arts", "commerce", "medical", "group", "campus"}
+
+
+def is_marketing_name(name: str) -> bool:
+    """True when the text reads like a search headline rather than a college name."""
+    words = re.findall(r"[a-z]+", (name or "").casefold())
+    if not words or all(w in GENERIC_NAME_WORDS for w in words):
+        return True
+    return bool(MARKETING_NAME.search(name or ""))
 
 # --------------------------------------------------------------------------
 # Labels used on faculty profile pages (lower-case, punctuation stripped) -> field

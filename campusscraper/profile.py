@@ -12,7 +12,8 @@ from .models import LIST_FIELDS, PersonRecord, Evidence
 from .relevance import departments_in
 from .vocab import (
     ACADEMIC_LINKS, CITY_CANON, CITY_RE, DESIGNATION_RE, EXPERIENCE_RE, INSTITUTION_WORDS, NAME_RE, NAME_STOP,
-    ORCID_ID_RE, QUAL_RE, QUAL_STRONG, WEAK_QUALS, clean_name, honorific_of, label_field, normalize_quals,
+    ORCID_ID_RE, QUAL_RE, QUAL_STRONG, WEAK_QUALS, clean_name, honorific_of, is_marketing_name, label_field,
+    normalize_quals,
 )
 
 SPLIT_RE = re.compile(r"\s*(?:[,;|•·]|\s/\s|\n)\s*")
@@ -490,8 +491,31 @@ TITLE_WORD = re.compile(
 DEPT_BAD = re.compile(r"^(?:home|faculty|people|staff|our team|team|about|about us|department|departments|academics)$|"
                       r"\b(?:mobile|phone|e-?mail|ext\b|extn|room|cabin|year|years|mail|contact|https?)\b|\d{3,}", re.I)
 INSTITUTION_BAD = re.compile(r"https?://|www\.|\b\d+\+?\s*(?:years?|yrs?)\b|^\s*\d|^(?:explore|discover|welcome|best|top|"
-                             r"apply|call|click|find|search|view|know|admissions?)\b", re.I)
+                             r"apply|call|click|find|search|view|know|admissions?)\b|"
+                             # a degree line names where someone STUDIED, not where they work
+                             r"\b(?:ph\.?\s?d|m\.?\s?tech|b\.?\s?tech|m\.?\s?sc|b\.?\s?sc|m\.?\s?e|b\.?\s?e|"
+                             r"m\.?\s?phil|mba|pursuing|graduated|conference|symposium|workshop|formerly)\b|"
+                             r"\b(?:19|20)\d\d\b", re.I)
 HOSPITAL_BAD = INSTITUTION_BAD
+
+
+def site_institution(soup, meta_info=None) -> str:
+    """The college a page belongs to, as the page itself states it.
+
+    Read from the site banner, not from the body: a profile page mentions the
+    universities a person studied at, and those are not their employer.
+    """
+    from .structured import meta as page_meta
+    info = meta_info if meta_info is not None else page_meta(soup)
+    heading = soup.find("h1")
+    options = [info.get("og:site_name") or "", heading.get_text(" ", strip=True) if heading else "",
+               *re.split(r"\s*[|\u2013\u2014]\s*|\s+[-]\s+", info.get("title") or "")]
+    for option in options:
+        option = " ".join(str(option).split()).strip(" ,-|")
+        if (5 <= len(option) <= 90 and INSTITUTION_WORDS.search(option)
+                and not is_marketing_name(option) and not INSTITUTION_BAD.search(option)):
+            return option
+    return ""
 
 
 def clean_designation(value) -> str | None:

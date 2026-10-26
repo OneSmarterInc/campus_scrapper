@@ -328,11 +328,26 @@ class Fetcher:
             return False
         if self.cfg.render == "always":
             return True
-        # auto: render when the HTML is an empty app shell.
-        text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", page.html, flags=re.S | re.I)
+        # auto: render when the HTML is an app shell the browser still has to fill.
+        return self.looks_unrendered(page.html)
+
+    @staticmethod
+    def looks_unrendered(html: str) -> bool:
+        """True when the text a reader would see is not in the HTML yet."""
+        text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", html, flags=re.S | re.I)
         words = len(text.split())
-        shell = re.search(r'id=["\'](?:root|app|__next|__nuxt)["\']', page.html) is not None
-        return words < 80 or (shell and words < 250)
+        shell = re.search(r'id=["\'](?:root|app|__next|__nuxt)["\']|<app-root|ng-version|ng-app|'
+                          r'data-reactroot|__INITIAL_STATE__|__NUXT__|v-cloak', html, re.I) is not None
+        scripts = len(re.findall(r"<script", html, re.I))
+        # A page carrying a menu and a footer but little else, behind a pile of
+        # bundles, is a shell with its chrome filled in: the list is still to come.
+        return words < 80 or (shell and words < 250) or (scripts >= 8 and words < 150)
+
+    def render_now(self, page: Page) -> Page | None:
+        """Fetch this page again through the browser, whatever the HTML looked like."""
+        if not self._browser_ok():
+            return None
+        return self._render(page)
 
     def _browser_ok(self) -> bool:
         if self.cfg.render == "never":

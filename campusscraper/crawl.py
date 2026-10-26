@@ -453,6 +453,16 @@ class Crawler:
                         pr = extract_faculty_pdf(page, self._pdf_people.get(url))
                     else:
                         pr = extract_page(page)
+                        # A faculty or staff page that named nobody is worth one
+                        # look through the browser: the list is often drawn by
+                        # JavaScript into a page that already carries its menu.
+                        if (not pr.doctors and not page.rendered and self.cfg.render == "auto"
+                                and LISTING_URL_HINTS.search(urlsplit(page.final_url).path)):
+                            shown = self.fetcher.render_now(page)
+                            if shown is not None:
+                                drawn = extract_page(shown)
+                                if drawn.doctors or drawn.offices:
+                                    page, pr = shown, drawn
                 except Exception as exc:  # one bad page must not stop the site
                     log.warning("page %s failed: %s", url, exc)
                     page = Page(url, url, 0, "", error=f"{type(exc).__name__}: {exc}")

@@ -27,6 +27,7 @@ ALL_FIELDS = SCALAR_FIELDS + LIST_FIELDS
 LAYER_PRIORITY = {
     "template": 100,
     "h1": 95,
+    "site": 92,      # the college whose website this is: the employer, not an alma mater
     "jsonld": 90,
     "microdata": 85,
     "embedded_json": 80,

@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 
 from .profile import city_from
 from .search_candidates import exclusion_reason
-from .vocab import CITY_CANON, INSTITUTION_WORDS
+from .vocab import CITY_CANON, INSTITUTION_WORDS, is_marketing_name
 
 ACADEMIC_HOST = re.compile(r"\.(?:ac\.[a-z]{2}|edu(?:\.[a-z]{2})?)$", re.I)
 # "Sardar Patel Institute of Technology", "K. J. Somaiya College of Engineering"
@@ -170,28 +170,9 @@ def site_queries(kind="", location="", extra=()):
     return list(dict.fromkeys([q for q in [*extra, *base] if q and len(q) < 200]))
 
 
-# "Best Engineering College in Mumbai", "Top 10 Colleges", "No.1 University":
-# advertising copy and list-page headlines, never the name of a college.
-MARKETING_NAME = re.compile(
-    r"\b(?:best|top\s*\d*|no\.?\s*\d+|#\s*\d+|rank(?:ed|ing|ings)?|list\s+of|leading|finest|"
-    r"cheapest|affordable|popular|famous|compare|fees?\s+structure|admission\s*20\d\d|"
-    r"cut\s*off|counsell?ing|placement\s+(?:record|package)s?)\b", re.I)
-
-
-# "Engineering College", "Institute of Technology": the kind of place, with
-# nothing that says which one. Every real name carries something of its own.
-GENERIC_WORDS = {"the", "of", "and", "in", "for", "a", "an", "college", "colleges", "institute",
-                 "institutes", "university", "school", "academy", "polytechnic", "engineering",
-                 "technology", "technological", "science", "sciences", "management", "studies",
-                 "education", "arts", "commerce", "medical", "group", "campus"}
-
-
 def is_marketing(name):
     """True when the text reads like a search headline rather than a college name."""
-    words = re.findall(r"[a-z]+", (name or "").casefold())
-    if not words or all(w in GENERIC_WORDS for w in words):
-        return True
-    return bool(MARKETING_NAME.search(name or ""))
+    return is_marketing_name(name)
 
 
 def names_from_results(results, limit=25):

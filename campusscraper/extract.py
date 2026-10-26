@@ -11,7 +11,7 @@ from .fetch import normalize_url
 from .models import LIST_FIELDS, PersonRecord, Page, PageResult
 from .profile import (
     _assign, find_name_in_text, finalize, labels_and_sections, parse_qualifications, patterns,
-    plain_person_name, primary_name, qualification_line,
+    plain_person_name, primary_name, qualification_line, site_institution,
 )
 from .vocab import ACADEMIC_LINKS, DESIGNATION_RE, NOT_STAFF_SECTION, ORCID_ID_RE, PROFILE_URL_HINTS, STAFF_SECTION
 
@@ -249,10 +249,20 @@ def extract_page(page: Page) -> PageResult:
     result.signals["dropped_students"] = sum(1 for d in result.doctors if is_student_record(d))
     result.signals["dropped_alumni"] = sum(1 for d in result.doctors if d.section_role == "alumni")
     result.doctors = [d for d in result.doctors if not is_student_record(d) and d.section_role != "alumni"]
+    # Where these people WORK is stated by the site they are published on. A
+    # profile page also names the universities they studied at; those are not
+    # their employer, so the site's own name outranks anything in the body.
+    whose_site = site_institution(soup, meta)
+    if whose_site:
+        for d in result.doctors:
+            d.set("institution", whose_site, "site", "the site's own name", url)
+        result.signals["site_institution"] = whose_site
     office = offices.extract_office(soup, main, url, meta, breadcrumbs)
     if office:
         if not office.institution and ld_page.get("institution"):
             office.institution = ld_page["institution"]
+        if whose_site:
+            office.institution = whose_site
         result.offices.append(office)
         result.signals["office"] = office.office_type
     result.signals["page_contacts"] = page_contacts

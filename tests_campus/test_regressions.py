@@ -416,3 +416,106 @@ def test_batch_reruns_when_cached_settings_change(monkeypatch,tmp_path):
     monkeypatch.setattr(batch,'EXTRACTION_REVISION',99)
     batch.run_batch(src,out,cfg,300)
     assert len(calls)==3
+
+
+# ---- the employer is the site, not the university someone studied at --------------
+PROFILE_WITH_DEGREES = """<!doctype html><html><head>
+<meta property="og:site_name" content="Thadomal Shahani Engineering College">
+<title>Prof. Mridul Saxena | Thadomal Shahani Engineering College</title></head><body>
+<h1>Prof. Mridul Saxena</h1>
+<p>Assistant Professor, Department of Artificial Intelligence and Data Science</p>
+<p>Email: mridul.saxena@thadomal.org</p>
+<table><tr><th>Degree</th><th>Year</th><th>University</th></tr>
+<tr><td>Ph.D</td><td>2022</td><td>A Haryana State Public University (Formerly YMCA University)</td></tr>
+<tr><td>M.Tech</td><td>2014</td><td>Amity University</td></tr></table>
+<p>Conference: WET-WAR 2025, NIT Patna, India</p>
+</body></html>"""
+
+
+def test_a_persons_alma_mater_is_never_recorded_as_their_institution():
+    """142 of 785 rows in a live run named the university someone studied at."""
+    result = extract_page(Page("https://tsec.edu/faculty/mridul", "https://tsec.edu/faculty/mridul",
+                               200, PROFILE_WITH_DEGREES))
+    assert result.doctors, "the faculty member was still read"
+    person = result.doctors[0]
+    assert person.get("institution") == "Thadomal Shahani Engineering College"
+    assert "Amity" not in str(person.get("institution"))
+    assert "YMCA" not in str(person.get("institution"))
+
+
+def test_a_degree_or_conference_line_is_never_an_institution():
+    for text in ["Ph.D ,2022, UoM", "M. Tech., 2007, IITB", "Conference: WET-WAR 2025, NIT Patna, India",
+                 "M.Tech. ,1990 NIT, Kurukshetra"]:
+        rec = PersonRecord(source_url="https://x.ac.in/f/1")
+        rec.set("name", "Dr. A B", "h1")
+        rec.set("institution", text, "labels")
+        clean_fields(rec)
+        assert not rec.get("institution"), f"{text!r} was kept as an institution"
+
+
+def test_a_site_whose_banner_is_an_advertisement_does_not_name_its_people():
+    html = PROFILE_WITH_DEGREES.replace("Thadomal Shahani Engineering College",
+                                        "Best Engineering College in Mumbai")
+    result = extract_page(Page("https://x.ac.in/f/1", "https://x.ac.in/f/1", 200, html))
+    assert result.doctors
+    assert not result.doctors[0].get("institution"), "a search headline is not a college name"
+
+
+# ---- headings and subjects are not people ----------------------------------------
+@pytest.mark.parametrize("text", [
+    "Professional Summary", "Educational Qualifications", "Research Interests",
+    "Awards and Honours", "Prof. Dean-Student", "Prof. Biotechnology, Professor",
+])
+def test_a_heading_or_a_subject_is_never_read_as_a_person(text):
+    from campusscraper.profile import find_name_in_text
+    assert find_name_in_text(text) is None
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Dr. Anil Mehta", "Dr. Anil Mehta"),
+    ("Ms. Khushboo", "Ms. Khushboo"),
+    ("Dr. N. C. Shivprakash", "Dr. N. C. Shivprakash"),
+    ("Prof. Shanthi Therese", "Prof. Shanthi Therese"),
+    ("Dr. Mohan Krishna, Training and Placement Officer", "Dr. Mohan Krishna"),
+])
+def test_real_names_are_still_read(text, expected):
+    from campusscraper.profile import find_name_in_text
+    assert find_name_in_text(text) == expected
+
+
+# ---- a faculty list drawn by JavaScript ------------------------------------------
+SHELL = ("<!doctype html><html><head><title>Faculty | Example College</title>"
+         + "<script src='/static/bundle.js'></script>" * 9 +
+         "</head><body><div id='app'></div><nav>Home About Admissions Departments Contact Us</nav>"
+         "<footer>Example College, Mumbai</footer></body></html>")
+FILLED = ("<!doctype html><html><head><title>Faculty | Example College</title></head><body>"
+          "<h1>Faculty</h1><table><tr><th>Name</th><th>Designation</th><th>E-mail</th></tr>"
+          "<tr><td>Dr. M. Suresh</td><td>Professor</td><td>suresh@example.ac.in</td></tr>"
+          "<tr><td>Mr. P. Kiran</td><td>Assistant Professor</td><td>kiran@example.ac.in</td></tr>"
+          "</table></body></html>")
+
+
+def test_an_empty_faculty_page_is_given_one_look_through_the_browser(monkeypatch):
+    """119 pages produced 6 faculty on a site that draws its list with JavaScript."""
+    cfg = ScrapeConfig(max_pages=2, delay_seconds=0, render="auto", allow_private_hosts=True,
+                       retries=0, use_sitemaps=False, respect_robots=False)
+    crawler = Crawler(cfg)
+    url = "https://example.ac.in/faculty"
+    monkeypatch.setattr(crawler.fetcher, "get",
+                        lambda u, **k: Page(u, u, 200, SHELL))
+    monkeypatch.setattr(crawler.fetcher, "render_now",
+                        lambda page: Page(page.url, page.final_url, 200, FILLED, rendered=True))
+    result = crawler.run([url])
+    names = {d.get("name") for d in result.doctors}
+    assert {"Dr. M. Suresh", "Mr. P. Kiran"} <= names, f"the rendered list was missed: {names}"
+
+
+def test_a_page_that_already_has_its_people_is_not_rendered_again(monkeypatch):
+    cfg = ScrapeConfig(max_pages=2, delay_seconds=0, render="auto", allow_private_hosts=True,
+                       retries=0, use_sitemaps=False, respect_robots=False)
+    crawler = Crawler(cfg)
+    calls = []
+    monkeypatch.setattr(crawler.fetcher, "get", lambda u, **k: Page(u, u, 200, FILLED))
+    monkeypatch.setattr(crawler.fetcher, "render_now", lambda page: calls.append(page) or None)
+    crawler.run(["https://example.ac.in/faculty"])
+    assert calls == [], "the browser was started for a page that was already complete"
