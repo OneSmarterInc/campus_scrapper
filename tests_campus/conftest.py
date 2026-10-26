@@ -85,6 +85,18 @@ def waf_url():
 
 
 @pytest.fixture(autouse=True)
+def _ignore_developer_dotenv(monkeypatch):
+    """A developer's .env must never decide what the tests do.
+
+    settings() reloads .env on every call, so a key a test deletes comes back
+    from the file and the run reaches the network with a real key. Tests set
+    every variable they need through monkeypatch instead.
+    """
+    import dotenv
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+
+
+@pytest.fixture(autouse=True)
 def _history_db(tmp_path, monkeypatch):
     """Each test writes run history to its own temporary database."""
     monkeypatch.setenv("CAMPUSSCRAPER_DB", str(tmp_path / "history.db"))
