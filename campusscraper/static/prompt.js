@@ -20,7 +20,8 @@ async function promptSetup() {
 function promptBody(text) {
   return {prompt:text, max_colleges:num('p-colleges','Maximum colleges',1,100), discovery_pages:num('p-pages','Discovery pages',1,100),
     searches:num('p-searches','Search queries',1,30), pages_per_college:num('p-crawl-pages','Pages per college',1,1000),
-    render:$('p-render').value, auto_scrape:$('p-auto').checked};
+    render:$('p-render').value, auto_scrape:$('p-auto').checked,
+    engine:$('p-engine').value, site_pages:num('p-site-pages','Pages read per site',2,60)};
 }
 
 async function startPrompt(body) {

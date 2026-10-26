@@ -227,7 +227,7 @@ def workflow(tmp_path, monkeypatch, site_url):
 
 def test_complete_prompt_to_excel_and_history(workflow):
     manager, searches, calls, _ = workflow
-    job = manager.create(PromptIn(prompt="Find one college and faculty researching machine learning", render="never", pages_per_college=60), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find one college and faculty researching machine learning", render="never", pages_per_college=60), start=False)
     manager.execute(job["id"])
     saved = manager.db.get(job["id"])
     assert saved["state"] in {"done", "partial"}, saved
@@ -246,7 +246,7 @@ def test_complete_prompt_to_excel_and_history(workflow):
 def test_repaired_prompt_completes_real_crawl_filtering_and_excel(workflow):
     manager, searches, calls, state = workflow
     state["plan_quotes"] = ["research in machine learning", "machine learning"]
-    job = manager.create(PromptIn(prompt="Find faculty researching machine learning", render="never", pages_per_college=60), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find faculty researching machine learning", render="never", pages_per_college=60), start=False)
     manager.execute(job["id"])
     saved = manager.db.get(job["id"])
     assert saved["state"] in {"done", "partial"}, saved
@@ -264,7 +264,7 @@ def test_failed_planning_export_includes_failure_and_rejected_criteria(workflow,
     manager, searches, calls, state = workflow
     state["plan_quotes"] = ["unsupported model paraphrase", "unsupported model paraphrase"]
     monkeypatch.setattr(web, "_PROMPT_MANAGER", manager)
-    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never"), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find machine learning faculty", render="never"), start=False)
     manager.execute(job["id"])
     client = TestClient(web.app)
     exported = client.get(f"/api/discovery/{job['id']}/evidence.json")
@@ -283,7 +283,7 @@ def test_failed_planning_export_includes_failure_and_rejected_criteria(workflow,
 def test_quota_during_plan_repair_resumes_without_repeating_initial_call(workflow):
     manager, searches, calls, state = workflow
     state.update(plan_quotes=["research in machine learning", "machine learning"], fail_repair_once=True)
-    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
     manager.execute(job["id"])
     waiting = manager.db.get(job["id"])
     assert waiting["state"] == "waiting" and not searches
@@ -301,7 +301,7 @@ def test_discovery_quota_then_process_restart_preserves_page_and_finishes_excel(
     import campusscraper.prompt_jobs as jobs
     manager, searches, calls, state = workflow
     state["fail_discovery_once"] = True
-    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
     manager.execute(job["id"])
     waiting = manager.db.get(job["id"])
     assert waiting["state"] == "waiting"
@@ -345,7 +345,7 @@ def test_unfiltered_prompt_preserves_manual_crawler_contacts(workflow, site_url,
     from campusscraper.batch import run_batch
     from campusscraper.sources import Source
     manager, *_ = workflow
-    job = manager.create(PromptIn(prompt="Find Sunrise faculty", render="never", pages_per_college=60), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find Sunrise faculty", render="never", pages_per_college=60), start=False)
     report = Report(prompt=job["body"]["prompt"], plan=plan(requested_institutions=1).model_dump(),
                     status="candidates_found", candidates=[{"institution": "Sunrise Institute of Technology", "url": site_url + "/faculty"}])
     manager.db.cache(job["id"], "discovery_report", asdict(report))
@@ -365,7 +365,7 @@ def test_quota_during_filtering_restarts_without_search_or_crawl(workflow, monke
     import campusscraper.prompt_jobs as jobs
     manager, searches, calls, state = workflow
     state["fail_filter_once"] = True
-    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find machine learning faculty", render="never", pages_per_college=60), start=False)
     manager.execute(job["id"])
     assert manager.db.get(job["id"])["state"] == "waiting"
     assert not manager.history.run_people(job["id"])
@@ -382,7 +382,7 @@ def test_quota_during_filtering_restarts_without_search_or_crawl(workflow, monke
 
 def test_pause_prevents_work_and_can_resume(workflow):
     manager, searches, _, _ = workflow
-    job = manager.create(PromptIn(prompt="Find machine learning faculty", render="never"), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find machine learning faculty", render="never"), start=False)
     assert manager.action(job["id"], "pause")["state"] == "paused"
     assert not searches
     manager.action(job["id"], "resume")
@@ -391,7 +391,7 @@ def test_pause_prevents_work_and_can_resume(workflow):
 
 def test_restart_marks_active_job_interrupted(workflow):
     manager, *_ = workflow
-    job = manager.create(PromptIn(prompt="Find machine learning faculty"), start=False)
+    job = manager.create(PromptIn(engine="evidence", prompt="Find machine learning faculty"), start=False)
     manager.update(job["id"], state="running")
     new = PromptManager(manager.db, manager.history, manager.out_dir)
     assert new.db.get(job["id"])["state"] == "interrupted"
@@ -424,3 +424,41 @@ def test_ollama_prompt_to_real_crawler_and_excel(workflow, monkeypatch):
     # Real crawler/export with mocked model transport: no cloud API required.
     monkeypatch.setenv("MODEL_PROVIDERS", "ollama")
     test_complete_prompt_to_excel_and_history(workflow)
+
+
+def test_sites_engine_prompt_to_excel_without_calling_any_model(workflow):
+    """The whole chain — prompt, search, verified URLs, contacts, Excel — with no model."""
+    manager, searches, calls, _ = workflow
+    job = manager.create(PromptIn(prompt="Find 1 engineering college in Hyderabad and return its faculty page URLs",
+                                  render="never", pages_per_college=60, site_pages=10), start=False)
+    manager.execute(job["id"])
+    saved = manager.db.get(job["id"])
+    # "partial" is the honest state when a site reports dead links; both carry results.
+    assert saved["state"] in {"done", "partial"}, saved.get("error")
+    assert calls == []  # no model was asked anything
+    report = saved["report"]
+    assert report["status"] == "candidates_found"
+    assert report["plan"]["request"]["kind"] == "engineering"
+    assert report["plan"]["request"]["location"] == "Hyderabad"
+    college = report["plan"]["colleges"][0]
+    assert "Sunrise Institute of Technology" in college["name"]
+    assert college["city"] == "Hyderabad"
+    assert college["staff_found"] >= 5
+    assert any(url.endswith("/departments/cse/faculty") or "faculty" in url
+               for url in college["faculty_urls"])
+    candidate = report["candidates"][0]
+    assert candidate["institution"] == college["name"] and candidate["extracted_staff"] >= 5
+    workbook = load_workbook(saved["xlsx"], read_only=True, data_only=True)
+    names = {row[0].value for row in workbook["Faculty"].iter_rows(min_row=2)}
+    assert "Dr. Anitha Rao" in names
+
+
+def test_sites_engine_states_what_it_did_not_filter(workflow):
+    manager, _, calls, _ = workflow
+    job = manager.create(PromptIn(prompt="Find 2 engineering colleges in Hyderabad with faculty researching machine learning",
+                                  render="never", auto_scrape=False, site_pages=8), start=False)
+    manager.execute(job["id"])
+    report = manager.db.get(job["id"])["report"]
+    assert calls == []
+    assert any("not applied" in issue for issue in report["issues"])
+    assert any("Requested 2 colleges" in issue for issue in report["issues"])

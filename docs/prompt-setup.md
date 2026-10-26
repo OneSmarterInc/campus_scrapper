@@ -359,3 +359,39 @@ form. Every candidate still needs the existing page/evidence checks. Other
 wording, exclusions, email conditions, and person filters use the semantic planner;
 this is not a general natural-language parser. Keep the UI maximum colleges high
 enough for the requested count.
+
+## How a prompt becomes college names and faculty URLs
+
+The default engine (**Crawl each site**) uses no AI model at all.
+
+1. **Read the request.** Count, college type, city, target and any named colleges
+   are read from your words with plain rules — the city list and department names
+   already used by the extractor. `Find 20 engineering colleges in Mumbai and
+   return their official faculty directory URLs` becomes
+   `20 · engineering · Mumbai · faculty pages`. Nothing is invented: a city the
+   reader cannot find stays empty and widens the search instead of narrowing it
+   wrongly.
+2. **Search for candidate sites.** SearXNG runs the plain searches a person would
+   type, plus `site:ac.in`. Listing sites (Collegedunia, Shiksha, Careers360,
+   FacultyPlus, Scribd) are never used as a source; at most a college *name* seen
+   in a title becomes another search, which must then be proved on the official site.
+3. **Prove each site by crawling it.** Each candidate site is crawled briefly
+   (14 pages by default) with the same extractor that builds your contact sheet.
+   That answers the only questions that matter, from the site's own pages:
+   its name, its city, whether it is the kind of college you asked for, and
+   **which page the extractor reads faculty from**. That page is the faculty URL.
+4. **Return names and URLs.** A college appears because staff were read from one of
+   its pages, and the count is shown beside each URL. Sites that fail say why:
+   `Site says Pune, not Mumbai`, `No page on this site listed faculty contacts`.
+5. **Hand over to the existing crawler.** The verified URLs become ordinary source
+   rows — download them as the familiar Excel template, or let the run continue
+   straight into contact extraction.
+
+Named colleges work the same way: `I want the faculty URLs from Sardar Patel
+Institute of Technology and K. J. Somaiya College of Engineering` searches for
+those two sites and proves each one.
+
+If your prompt has conditions about individual people (research area, must have
+an email, years of experience), this engine says so in the coverage notes and
+does not filter on them. Switch **How colleges are verified** to **AI judges each
+page** for those, which needs a working Ollama or cloud model.

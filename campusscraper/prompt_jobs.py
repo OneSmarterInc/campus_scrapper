@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .batch import run_batch
 from .config import ScrapeConfig
-from .crawl import CrawlResult, PageLog
+from .crawl import CrawlResult, Crawler, PageLog
 from .discovery_services import (
     CachedFetcher, CachedSearch, ConfigurationError, DiscoveryDB, ModelRouter, Paused, ServiceWait, settings,
 )
@@ -21,6 +21,7 @@ from .export import to_xlsx
 from .fetch import Fetcher
 from .models import OfficeRecord, PersonRecord
 from .prompt_discovery import Limits, Report
+from .site_discovery import College, discover_colleges, read_request, sources_from_colleges
 from .verified_discovery import discover_verified, filter_records, sources_from_report
 
 ACTIVE = {"queued", "running", "waiting", "pausing", "stopping"}
@@ -36,6 +37,9 @@ class PromptIn(BaseModel):
     pages_per_college: int = Field(200, ge=1, le=1000)
     render: Literal["never", "auto", "always"] = "auto"
     auto_scrape: bool = True
+    # "sites" proves each college by crawling it; "evidence" asks a model to judge pages.
+    engine: Literal["sites", "evidence"] = "sites"
+    site_pages: int = Field(14, ge=2, le=60)
 
     @field_validator("prompt")
     @classmethod
@@ -140,6 +144,63 @@ class PromptManager:
                 self.wake.wait(2)
                 self.wake.clear()
 
+    def _discover_sites(self, body, search, progress, control):
+        """Find colleges and their faculty pages by crawling each site.
+
+        Search only suggests where to look. A college appears in the result
+        because our extractor read its staff from one of its own pages.
+        """
+        request = read_request(body.prompt)
+        want = min(request.count, body.max_colleges)
+        report = Report(prompt=body.prompt)
+        criteria = [{"id": "institution_type", "requirement": f"{request.kind} college",
+                     "prompt_quote": request.kind, "applies_to": "institution"}] if request.kind else []
+        if request.location:
+            criteria.append({"id": "location", "requirement": f"Located in {request.location}",
+                             "prompt_quote": request.location, "applies_to": "institution"})
+        report.plan = {"objective": body.prompt, "target": request.target, "criteria": criteria,
+                       "requested_institutions": request.count, "explanation": request.summary(),
+                       "request": request.as_dict(), "colleges": []}
+        if request.count > body.max_colleges:
+            report.issues.append(f"Requested {request.count} colleges but this run is limited to "
+                                 f"{body.max_colleges}. Raise 'Maximum colleges' to {request.count}")
+        if request.departments:
+            report.issues.append("Keeping only these departments in the contact export: "
+                                 + ", ".join(request.departments))
+        if request.unfiltered_conditions:
+            report.issues.append("This run verifies colleges and faculty pages. Conditions about individual "
+                                 "people (research area, email required, experience) were not applied; "
+                                 "switch the engine to 'AI judges pages' for those")
+
+        def make_crawler():
+            return Crawler(ScrapeConfig(render=body.render, strict_public_network=True, max_bytes=2_000_000,
+                                        retries=1, max_pages=body.site_pages, workers=2, patience=0,
+                                        include_offices=request.target != "faculty"),
+                           stop_event=self.stop)
+
+        colleges, rejected, notes = discover_colleges(
+            search, make_crawler, want=want, kind=request.kind, location=request.location,
+            target=request.target, names=request.names, max_searches=body.searches,
+            control=control, progress=progress)
+        report.plan["colleges"] = [c.as_dict() for c in colleges]
+        report.searches = len(getattr(search, "queries", []))
+        report.pages = sum(c.pages_read for c in colleges)
+        for college in colleges:
+            urls = college.office_urls if request.target == "offices" else college.faculty_urls
+            for url in urls:
+                report.candidates.append({
+                    "url": url, "institution": college.name, "accepted": True,
+                    "extracted_staff": college.staff_found,
+                    "reason": f"{college.staff_found} staff read from this site by the extractor",
+                    "evidence_sources": [{"criterion_id": k, "quote": v, "source_url": college.homepage}
+                                         for k, v in college.evidence.items()]})
+        report.attempts = [{"url": f"https://{r.host}/", "institution": r.name, "accepted": False,
+                            "reason": r.reason, "evidence_sources": []} for r in rejected]
+        report.issues.extend(notes)
+        report.issues = list(dict.fromkeys(report.issues))
+        report.status = "candidates_found" if report.candidates else "no_candidates"
+        return report
+
     def execute(self, job_id):
         """Public for deterministic integration tests; production uses one worker."""
         job = self.db.get(job_id)
@@ -179,16 +240,21 @@ class PromptManager:
                 search = CachedSearch(self.db, job_id, config["search_url"], control)
                 fetcher = CachedFetcher(Fetcher(ScrapeConfig(render=body.render, strict_public_network=True,
                     max_bytes=2_000_000, retries=1), self.stop), self.db, job_id, control)
-                report = discover_verified(body.prompt, model, search, fetcher,
-                    Limits(searches=body.searches, pages=body.discovery_pages, institutions=body.max_colleges, rounds=2), control, progress,
-                    load_state=lambda: self.db.cached(job_id, "discovery_state_v1"),
-                    save_state=lambda state: self.db.cache(job_id, "discovery_state_v1", state))
+                if body.engine == "sites":
+                    report = self._discover_sites(body, search, progress, control)
+                else:
+                    report = discover_verified(body.prompt, model, search, fetcher,
+                        Limits(searches=body.searches, pages=body.discovery_pages, institutions=body.max_colleges, rounds=2), control, progress,
+                        load_state=lambda: self.db.cached(job_id, "discovery_state_v1"),
+                        save_state=lambda state: self.db.cache(job_id, "discovery_state_v1", state))
                 self.db.cache(job_id, "discovery_report", asdict(report))
             self.update(job_id, report=asdict(report))
             if report.status != "candidates_found":
                 self.update(job_id, state=report.status, phase=report.status, finished=time.time())
                 return
-            sources = sources_from_report(report)
+            sources = (sources_from_colleges([College(**c) for c in report.plan["colleges"]],
+                                             report.plan.get("target", "faculty"))
+                       if body.engine == "sites" else sources_from_report(report))
             if not body.auto_scrape:
                 self.update(job_id, state="sources_ready", phase="sources_ready", finished=time.time())
                 return
@@ -214,7 +280,8 @@ class PromptManager:
                 self.out_dir.mkdir(parents=True, exist_ok=True)
                 run_batch(sources, self.out_dir / f"prompt-{job_id}-raw.xlsx",
                     ScrapeConfig(render=body.render, strict_public_network=True, workers=2,
-                                 include_offices=True),
+                                 include_offices=True,
+                                 departments=list((report.plan.get("request") or {}).get("departments") or [])),
                     body.pages_per_college, resume=True, progress=crawl_event, stop_event=self.stop,
                     live=live, parallel_sites=2)
                 control()
