@@ -8,11 +8,16 @@ Give it a college website (home page, faculty page, department page, or one facu
 Student offices are how you reach students. Pages that name individual students (student coordinators, club office-bearers, "III Year CSE", roll numbers) are read, but those students' names, phones and emails are left out of every output. The **Student Lines Left Out** column counts them, so you can see when a page had more.
 
 **New: prompt to contacts.** Under **New run**, describe the colleges or faculty
-you need. Ollama-first + SearXNG discovery (Groq/Gemini optional) finds official source pages, the
-existing crawler extracts contacts, and prompt-specific filters run before export.
-Gemini can provide fallback capacity. Saved jobs pause/resume across quota
-interruptions. This optional feature needs free-tier API credentials and a
-SearXNG service; ordinary URL/Excel crawling still needs no model key.
+you need. Discovery runs on a local Ollama model plus a local SearXNG service and
+finds official source pages; the existing crawler extracts contacts, and
+prompt-specific filters run before export. Groq and Gemini are optional extra
+capacity, switched on only by listing them in `MODEL_PROVIDERS`. Saved jobs
+pause/resume across interruptions. This optional feature needs Ollama and
+SearXNG running locally; ordinary URL/Excel crawling needs neither.
+
+Every page a model accepts is corroborated by the local extractor: a page whose
+only people are students or alumni is rejected whatever the model says, and the
+count of staff actually read from each verified page is shown beside its URL.
 See [the complete setup commands](docs/prompt-setup.md) and
 [the validation results and remaining live checks](docs/prompt-validation.md).
 

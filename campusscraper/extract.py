@@ -244,6 +244,10 @@ def extract_page(page: Page) -> PageResult:
     if not_staff_page(url, h1_text, breadcrumbs, meta):
         result.doctors = []
         result.signals["not_staff_page"] = True
+    # Keep what was dropped, and why: a page whose only people are students or
+    # alumni is evidence about the page, not just noise to discard.
+    result.signals["dropped_students"] = sum(1 for d in result.doctors if is_student_record(d))
+    result.signals["dropped_alumni"] = sum(1 for d in result.doctors if d.section_role == "alumni")
     result.doctors = [d for d in result.doctors if not is_student_record(d) and d.section_role != "alumni"]
     office = offices.extract_office(soup, main, url, meta, breadcrumbs)
     if office:

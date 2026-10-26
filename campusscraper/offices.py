@@ -84,6 +84,11 @@ def _student_blocks(main: Tag) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def student_blocks(main: Tag) -> list[str]:
+    """Texts on the page that describe individual students (public wrapper)."""
+    return _student_blocks(main)
+
+
 def extract_office(soup: BeautifulSoup, main: Tag, url: str, meta: dict, breadcrumbs: list[str]) -> OfficeRecord | None:
     h1_el = soup.find("h1")
     h1 = " ".join(h1_el.get_text(" ", strip=True).split()) if h1_el else ""

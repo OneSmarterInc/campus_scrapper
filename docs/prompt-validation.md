@@ -345,3 +345,39 @@ weaken tests or call gate-blocked model errors correct model classifications.
 Validation for this guard: full suite 257 passed, one existing portal profile-count
 test failed; that test plus all 25 simple-plan/guard cases passed on targeted rerun
 (26 passed). The intermittent profile-count failure is not established as fixed.
+
+## Population corroboration instead of trusting the model (26 October 2026)
+
+The student-only quote veto closed one observed hole but still let a model's
+`accepted=true` decide the population. Two cases proved that was not enough: an
+alumni page whose quote names a professor, and a student directory whose quote
+is `Anitha Rao CS21B041 CSE II Year` — no population word at all, so nothing for
+a text guard to catch.
+
+Every fetched page is now read by the same extractor that builds the final
+directory, and that reading can veto the model:
+
+- the page's own identity marks it alumni/testimonial/topper/news, or
+- it yields no staff at all while yielding 3+ student entries, or
+- it yields no staff at all while yielding 2+ alumni entries.
+
+A thin or unusually built staff page yields nothing either way and stays
+inconclusive: it is still judged on evidence, never rejected for being hard to
+parse. Office targets are unaffected, so a placement cell listing student
+coordinators beside its officer is still accepted. The number of staff actually
+read from each accepted page is recorded on the attempt (`extracted_staff`) and
+shown beside the URL in the portal, so a verified source that yielded zero
+people is visible rather than implied.
+
+This is corroboration by an independent deterministic component, not proof of
+model correctness. A page can still be wrong in ways neither layer detects —
+wrong campus of a multi-campus trust, a branch address in a footer, an outdated
+page. Live evaluation of a larger local model is still outstanding.
+
+Validation: full suite **267 passed** (258 before, 9 new population cases), DOM
+suite **10 passed**. The previously intermittent portal profile-count test passed
+8/8 targeted reruns and 2 full-suite runs here; the budget-limited crawl it
+depends on produced identical results in 24 runs at both 1 and 3 workers, so the
+cause reported earlier was not reproduced on this machine and is not established
+as fixed. Ollama could not be installed in this environment (ollama.com
+unreachable, GitHub releases 403), so no live local-model inference was run.

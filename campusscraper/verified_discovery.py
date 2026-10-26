@@ -226,7 +226,31 @@ def page_content(page, allow_local=False):
     return text, chunks, links
 
 
-def _check_page(decision, plan, current, related, links):
+def staff_page_signal(page):
+    """Who does this page actually list, according to our own extractor?
+
+    The model judges meaning; this corroborates the population with the same
+    engine that builds the final directory, so a confident wrong answer cannot
+    pass alone. Only positive evidence of the WRONG population rejects a page:
+    a thin or unusually built staff page stays inconclusive and is still judged
+    on evidence, never rejected for being hard to parse.
+    """
+    unknown = {"available": False, "people": 0, "students": 0, "alumni": 0, "not_staff_page": False}
+    try:
+        from . import offices
+        from .dom import main_content, parse
+        from .extract import extract_page
+        result = extract_page(page)
+        student_lines = len(offices.student_blocks(main_content(parse(page.html))))
+    except Exception:  # extraction must never break discovery
+        return unknown
+    return {"available": True, "people": len(result.doctors),
+            "students": max(student_lines, result.signals.get("dropped_students", 0)),
+            "alumni": result.signals.get("dropped_alumni", 0),
+            "not_staff_page": bool(result.signals.get("not_staff_page"))}
+
+
+def _check_page(decision, plan, current, related, links, signal=None):
     if any(i not in {l["id"] for l in links} for i in decision.follow_link_ids):
         raise ValueError("Unobserved link ID")
     if not decision.accepted:
@@ -264,6 +288,14 @@ def _check_page(decision, plan, current, related, links):
         r"|\bfaculty\s+(?:coordinator|advisor|adviser|members?)\b", quote, re.I)
     if plan.target in {"faculty", "staff"} and nonstaff and not staff_role:
         raise ValueError("Quoted evidence describes students, alumni or applicants, not faculty/staff")
+    # A literal quote only proves the words exist. Corroborate the population.
+    if plan.target in {"faculty", "staff"} and signal and signal.get("available"):
+        if signal["not_staff_page"]:
+            raise ValueError("Page is an alumni, testimonial, topper or news section, not a staff directory")
+        if not signal["people"] and signal["students"] >= 3:
+            raise ValueError("Page lists individual students, not faculty or staff")
+        if not signal["people"] and signal["alumni"] >= 2:
+            raise ValueError("The only people on this page are alumni, not current faculty or staff")
     required = {c.id for c in plan.criteria if c.applies_to == "institution"}
     if len(decision.evidence) != len(required) or {e.criterion_id for e in decision.evidence} != required:
         raise ValueError("Every institutional requirement needs evidence")
@@ -358,6 +390,10 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                 "incomplete": {}, "pending": None, "details": {}}
         emit("searching")
     cap = min(plan.requested_institutions or limits.institutions, limits.institutions)
+    if plan.requested_institutions and plan.requested_institutions > limits.institutions:
+        report.issues.append(
+            f"Requested {plan.requested_institutions} colleges but this run is limited to {limits.institutions}. "
+            f"Raise 'Maximum colleges' to {plan.requested_institutions} and run again to attempt the full request")
     per_origin_limit = max(6, min(12, math.ceil(limits.pages / cap)))
     allow_local = fetcher.cfg.allow_private_hosts
     context_terms = " ".join(c.prompt_quote for c in plan.criteria if c.applies_to == "institution")
@@ -508,7 +544,7 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                             documents.append({"url": final, "summary": text[:600] + " " + text[-600:]})
                         pending.update(stage="identity", final=final, chunks=chunks, links=links,
                                        related=related, chunk_index=0, follow_ids=[], accepted=False,
-                                       text_length=len(text))
+                                       text_length=len(text), staff_signal=staff_page_signal(page))
                         emit("checking_pages", current=final)
                     final = pending["final"]
                     if pending["stage"] == "identity":
@@ -546,14 +582,18 @@ def discover_verified(prompt, model, search, fetcher, limits=None, control=lambd
                             "plan": {k: report.plan[k] for k in ("criteria", "target", "objective")}, "url": final, "current_text": chunk,
                             "related_documents": pending["related"], "links": pending["links"]})
                         try:
-                            evidence = _check_page(decision, plan, chunk, pending["related"], pending["links"])
+                            evidence = _check_page(decision, plan, chunk, pending["related"],
+                                                   pending["links"], pending.get("staff_signal"))
                         except ValueError as exc:
                             rejected = {"url": final, **decision.model_dump(), "accepted": False,
-                                        "reason": str(exc), "validation_error": True, "evidence_sources": []}
+                                        "reason": str(exc), "validation_error": True, "evidence_sources": [],
+                                        "extracted_staff": (pending.get("staff_signal") or {}).get("people", 0)}
                             report.attempts = [a for a in report.attempts if a["url"] != final] + [rejected]
                             raise
                         pending["follow_ids"] = list(dict.fromkeys(pending["follow_ids"] + decision.follow_link_ids))
-                        attempt = {"url": final, **decision.model_dump(), "evidence_sources": [
+                        attempt = {"url": final, **decision.model_dump(),
+                                   "extracted_staff": (pending.get("staff_signal") or {}).get("people", 0),
+                                   "evidence_sources": [
                             {**e, "source_url": final if e["source_url"] == "current" else e["source_url"]}
                             for e in evidence]}
                         report.attempts = [a for a in report.attempts if a["url"] != final] + [attempt]

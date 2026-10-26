@@ -99,7 +99,7 @@ async function pollPrompt(id) {
   $('p-sources').innerHTML = [...groups].map(([name, cs], idx) => {
     const row = j.rows.find(x => x.institution === name);
     const state = row ? `${row.status === 'done' || row.status === 'resumed' ? 'Crawl ended' : row.status} · ${row.pages} pages · ${row.faculty} extracted faculty before filtering` : 'Source pages found';
-    return `<article class="prompt-source"><b>${idx+1}. ${esc(name)}</b><p class="hint">${esc(state)}</p><ul>${cs.map(c => `<li><a href="${esc(safeUrl(c.url))}" target="_blank" rel="noopener">${esc(c.url)}</a></li>`).join('')}</ul>${row?.note ? `<p class="hint">${esc(row.note)}</p>` : ''}</article>`;
+    return `<article class="prompt-source"><b>${idx+1}. ${esc(name)}</b><p class="hint">${esc(state)}</p><ul>${cs.map(c => `<li><a href="${esc(safeUrl(c.url))}" target="_blank" rel="noopener">${esc(c.url)}</a>${typeof c.extracted_staff === 'number' ? ` <span class="hint">· ${c.extracted_staff} staff read from this page</span>` : ''}</li>`).join('')}</ul>${row?.note ? `<p class="hint">${esc(row.note)}</p>` : ''}</article>`;
   }).join('');
   $('p-notes-wrap').hidden = !(report.issues || []).length;
   $('p-notes').innerHTML = (report.issues || []).map(x => `<li>${esc(x)}</li>`).join('');
