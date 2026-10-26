@@ -260,3 +260,29 @@ def test_a_site_whose_title_is_an_advertisement_is_named_by_its_address():
     name, city, _ = read_identity(Page("https://x.ac.in/", "https://x.ac.in/", 200, html))
     assert name == ""          # nothing on the page is usable as a name
     assert city == "Mumbai"
+
+
+# ---- a place typed in lower case is still a place ---------------------------------
+@pytest.mark.parametrize("prompt,city", [
+    ("we want the college website urls of faculty pages from pune", "Pune"),
+    ("engineering colleges in bengaluru with faculty emails", "Bengaluru"),
+    ("faculty directory urls for colleges in NEW DELHI", "New Delhi"),
+    ("Find 20 engineering colleges in Mumbai", "Mumbai"),
+])
+def test_the_city_is_read_whatever_the_capitalisation(prompt, city):
+    from campusscraper.site_discovery import read_request
+    assert read_request(prompt).location == city
+
+
+def test_a_place_this_reader_cannot_match_is_reported_rather_than_ignored():
+    """Silently dropping the place returned colleges in Texas for a Pune request."""
+    from campusscraper.site_discovery import read_request
+    request = read_request("find faculty page urls for colleges in the Konkan region")
+    assert request.location == ""
+    assert request.unread_place == "Konkan"
+
+
+def test_naming_colleges_is_not_mistaken_for_naming_a_place():
+    from campusscraper.site_discovery import read_request
+    request = read_request("I want the faculty URLs from Veermata Jijabai Technological Institute")
+    assert request.unread_place == ""

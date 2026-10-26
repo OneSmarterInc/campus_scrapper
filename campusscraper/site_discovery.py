@@ -62,6 +62,23 @@ PERSON_CONDITIONS = re.compile(
     r"\bexperience of\b|\bworking on\b|\bwho (?:have|has|work)", re.I)
 
 
+# "colleges in Pune", "universities near Nagpur", "faculty pages from Pune"
+PLACE_PHRASE = re.compile(r"\b(?:in|from|near|around|across)\s+(?:the\s+)?([A-Za-z][\w.\'-]{2,})\b")
+_NOT_A_PLACE = {"the", "a", "an", "faculty", "faculties", "college", "colleges", "university", "universities",
+                "institute", "institutes", "page", "pages", "website", "websites", "url", "urls", "contact",
+                "contacts", "email", "emails", "information", "india", "them", "it", "which", "each", "their",
+                "these", "those", "all", "any", "this", "that", "me", "us", "you", "list", "data", "details"}
+
+
+def _place_word(text):
+    """A place named in the request that this reader does not know."""
+    for match in PLACE_PHRASE.finditer(text):
+        word = (match.group(1) or "").strip(" .,")
+        if word and word.casefold() not in _NOT_A_PLACE and not word.isdigit():
+            return word
+    return ""
+
+
 @dataclass
 class Request:
     """What the user asked for, read from the prompt without a model."""
@@ -72,12 +89,14 @@ class Request:
     names: list[str] = field(default_factory=list)
     departments: list[str] = field(default_factory=list)
     unfiltered_conditions: bool = False
+    unread_place: str = ""     # a place the request names that this reader could not match
 
     def as_dict(self):
         return {"count": self.count, "kind": self.kind, "location": self.location,
                 "target": self.target, "names": list(self.names),
                 "departments": list(self.departments),
-                "unfiltered_conditions": self.unfiltered_conditions}
+                "unfiltered_conditions": self.unfiltered_conditions,
+                "unread_place": self.unread_place}
 
     def summary(self):
         what = " ".join(w for w in [self.kind, "colleges"] if w)
@@ -106,9 +125,10 @@ def read_request(prompt):
     kind = next((k for k in TYPE_WORDS if re.search(rf"\b{k}\b", low)), "")
     if kind in ("science", "arts") and re.search(r"\bengineering\b", low):
         kind = "engineering"
-    city = city_from(text) or ""
+    city = city_from(text) or city_from(text.title()) or ""   # people type "pune", not "Pune"
     if city and names and city.casefold() in " ".join(names).casefold():
         city = ""  # the city appeared only inside a college's own name
+    unread_place = "" if (city or names) else _place_word(text)
     count_match = re.search(r"\b(\d{1,3})\s+(?:\w+\s+){0,2}?(?:colleges?|universit|institutes?)", low)
     word_match = re.search(r"\b(" + "|".join(COUNT_WORDS) + r")\s+(?:\w+\s+){0,2}?(?:colleges?|universit|institutes?)", low)
     if count_match:
@@ -124,7 +144,8 @@ def read_request(prompt):
     wants_faculty = bool(FACULTY_WORDS.search(low)) or not wants_office
     target = "both" if wants_office and wants_faculty else ("offices" if wants_office else "faculty")
     return Request(count=max(1, min(count, 100)), kind=kind, location=city, target=target, names=names,
-                   departments=departments, unfiltered_conditions=bool(PERSON_CONDITIONS.search(text)))
+                   departments=departments, unfiltered_conditions=bool(PERSON_CONDITIONS.search(text)),
+                   unread_place=unread_place)
 
 
 @dataclass

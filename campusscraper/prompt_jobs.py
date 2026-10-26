@@ -167,6 +167,10 @@ class PromptManager:
         if request.count > body.max_colleges:
             report.issues.append(f"Requested {request.count} colleges but this run is limited to "
                                  f"{body.max_colleges}. Raise 'Maximum colleges' to {request.count}")
+        if request.unread_place:
+            report.issues.append(
+                f"\u201c{request.unread_place}\u201d was not recognised as a city, so colleges were not "
+                f"limited by location. Name a city (for example \u201cin Pune\u201d) to filter by place")
         if request.departments:
             report.issues.append("Keeping only these departments in the contact export: "
                                  + ", ".join(request.departments))
