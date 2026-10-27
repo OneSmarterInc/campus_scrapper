@@ -291,3 +291,41 @@ def test_discovery_to_real_crawler_and_excel_integration(site_url, tmp_path):
         assert "Rahul Verma" not in all_data
     finally:
         wb.close()
+
+
+def test_a_state_is_read_as_a_place_and_its_cities():
+    from campusscraper.site_discovery import read_request
+
+    r = read_request("top 10 engineering colleges in Tamil Nadu")
+    assert r.state == "Tamil Nadu" and not r.unread_place   # was: "Tamil" not recognised
+    assert {"Chennai", "Coimbatore", "Vellore"} <= set(r.places)
+    assert read_request("colleges in tamilnadu").state == "Tamil Nadu"
+    assert read_request("engineering colleges in UP").state == "Uttar Pradesh"
+    assert read_request("private engineering colleges in Hyderabad").location == "Hyderabad"
+
+
+def test_an_excluded_city_is_not_mistaken_for_the_place_asked_for():
+    from campusscraper.site_discovery import read_request
+
+    r = read_request("engineering colleges in Karnataka except Bengaluru")
+    assert r.state == "Karnataka" and r.excluded_locations == ["Bengaluru"]
+    assert "Bengaluru" not in r.places and "Mysuru" in r.places
+    r = read_request("colleges in Maharashtra except Mumbai and Pune")
+    assert r.excluded_locations == ["Mumbai", "Pune"]
+    assert "Nagpur" in r.places and "Mumbai" not in r.places
+
+
+def test_a_foreign_university_is_never_returned_for_an_indian_run():
+    from campusscraper.site_discovery import Rejected, _asked_for, read_request
+    from campusscraper.vocab import FOREIGN_HOST
+
+    assert FOREIGN_HOST.search("www.imperial.ac.uk")      # the London result that appeared
+    assert not FOREIGN_HOST.search("vit.ac.in")
+    assert not FOREIGN_HOST.search("www.nitt.edu")
+    # Named explicitly, a foreign site is allowed through.
+    from campusscraper.site_discovery import Request
+
+    assert _asked_for(Request(names=["Imperial College London"]), "www.imperial.ac.uk")
+    assert not _asked_for(read_request("top 10 engineering colleges in Tamil Nadu"), "www.imperial.ac.uk")
+    assert not _asked_for(Request(names=["VIT Vellore"]), "www.imperial.ac.uk")
+    assert isinstance(Rejected("h", "r"), Rejected)

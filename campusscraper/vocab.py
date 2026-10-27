@@ -272,6 +272,70 @@ CITY_CANON = {"Gurgaon": "Gurugram", "Bangalore": "Bengaluru", "Bombay": "Mumbai
               "Mangalore": "Mangaluru", "Calicut": "Kozhikode", "Allahabad": "Prayagraj", "Vizag": "Visakhapatnam",
               "Pondicherry": "Puducherry", "Trichy": "Tiruchirappalli", "Belgaum": "Belagavi", **LOCALITY_CITY}
 
+# States, and the cities each one covers. A request for "Tamil Nadu" is a request for
+# its cities: the reader was city-only, so "Tamil Nadu" read as the unknown word "Tamil".
+STATES: dict[str, list[str]] = {
+    "Maharashtra": ["Mumbai", "Navi Mumbai", "Thane", "Pune", "Nagpur", "Nashik", "Aurangabad", "Amravati",
+                    "Kolhapur", "Sangli", "Solapur", "Jalgaon", "Akola", "Nanded", "Latur"],
+    "Karnataka": ["Bengaluru", "Mysuru", "Mangaluru", "Manipal", "Hubli", "Belagavi"],
+    "Tamil Nadu": ["Chennai", "Coimbatore", "Madurai", "Tiruchirappalli", "Vellore", "Salem", "Erode",
+                   "Tirunelveli"],
+    "Telangana": ["Hyderabad", "Secunderabad", "Warangal", "Karimnagar"],
+    "Andhra Pradesh": ["Visakhapatnam", "Vijayawada", "Guntur", "Tirupati", "Kakinada", "Rajahmundry",
+                       "Nellore", "Kurnool", "Anantapur"],
+    "West Bengal": ["Kolkata", "Durgapur", "Kharagpur", "Siliguri", "Howrah"],
+    "Odisha": ["Bhubaneswar", "Cuttack", "Rourkela"],
+    "Gujarat": ["Ahmedabad", "Surat", "Vadodara", "Rajkot", "Gandhinagar", "Anand"],
+    "Rajasthan": ["Jaipur", "Jodhpur", "Udaipur", "Kota", "Pilani", "Bikaner"],
+    "Uttar Pradesh": ["Lucknow", "Kanpur", "Varanasi", "Prayagraj", "Agra", "Meerut", "Gorakhpur", "Noida",
+                      "Greater Noida", "Ghaziabad", "Bareilly"],
+    "Bihar": ["Patna", "Muzaffarpur"],
+    "Jharkhand": ["Ranchi", "Jamshedpur", "Dhanbad"],
+    "Madhya Pradesh": ["Bhopal", "Indore", "Gwalior", "Jabalpur"],
+    "Chhattisgarh": ["Raipur", "Bilaspur"],
+    "Punjab": ["Mohali", "Ludhiana", "Amritsar", "Jalandhar", "Patiala", "Bathinda"],
+    "Haryana": ["Gurugram", "Faridabad", "Panchkula", "Karnal", "Sonipat", "Hisar", "Rohtak", "Ambala",
+                "Kurukshetra"],
+    "Uttarakhand": ["Dehradun", "Roorkee", "Haridwar", "Rishikesh"],
+    "Himachal Pradesh": ["Shimla", "Mandi"],
+    "Jammu and Kashmir": ["Jammu", "Srinagar"],
+    "Kerala": ["Kochi", "Thiruvananthapuram", "Kozhikode", "Thrissur", "Kollam", "Kannur"],
+    "Assam": ["Guwahati", "Silchar"],
+    "Meghalaya": ["Shillong"],
+    "Goa": ["Goa", "Panaji"],
+    "Delhi": ["Delhi", "New Delhi"],
+    "Chandigarh": ["Chandigarh"],
+    "Puducherry": ["Puducherry"],
+}
+STATE_ALIASES = {
+    "tamilnadu": "Tamil Nadu", "tn": "Tamil Nadu", "ap": "Andhra Pradesh", "up": "Uttar Pradesh",
+    "mp": "Madhya Pradesh", "hp": "Himachal Pradesh", "j&k": "Jammu and Kashmir", "jk": "Jammu and Kashmir",
+    "orissa": "Odisha", "pondicherry": "Puducherry", "ncr": "Delhi", "delhi ncr": "Delhi",
+    "uttaranchal": "Uttarakhand", "maharastra": "Maharashtra", "karnatak": "Karnataka",
+    "westbengal": "West Bengal", "telengana": "Telangana", "andhrapradesh": "Andhra Pradesh",
+}
+STATE_RE = re.compile(
+    r"\b(" + "|".join(sorted((re.escape(s) for s in list(STATES) + list(STATE_ALIASES)),
+                             key=len, reverse=True)).replace(r"\ ", r"\s+") + r")\b", re.I)
+
+
+def state_from(text: str) -> str:
+    """The Indian state a request names, if any. '' when it names none."""
+    match = STATE_RE.search(text or "")
+    if not match:
+        return ""
+    found = " ".join(match.group(1).split()).casefold()
+    for name in STATES:
+        if name.casefold() == found:
+            return name
+    return STATE_ALIASES.get(found, "")
+
+
+# Country words that mean a site is not an Indian institution.
+FOREIGN_HOST = re.compile(
+    r"\.(?:ac\.uk|edu\.au|ac\.nz|edu\.sg|edu\.my|ac\.za|edu\.pk|ac\.bd|ac\.lk|ac\.ae|edu\.ph|"
+    r"ac\.jp|edu\.cn|ac\.kr|edu\.hk)$", re.I)
+
 INSTITUTION_WORDS = re.compile(
     r"\b(?:College|University|Institute|Vidyapeeth|Vidyalaya|Mahavidyalaya|Academy|School of [A-Z][a-z]+|IIT|NIT|"
     r"IIIT|IISc|IISER|BITS|Polytechnic|Deemed)\b")

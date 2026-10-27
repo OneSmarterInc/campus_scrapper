@@ -171,6 +171,11 @@ class PromptManager:
         if wanted > body.max_colleges:
             report.issues.append(f"Requested {wanted} colleges but this run is limited to "
                                  f"{body.max_colleges}. Raise 'Maximum colleges' to {wanted}")
+        if request.state:
+            report.issues.append(
+                f"\u201c{request.state}\u201d read as a state: colleges in "
+                + ", ".join(request.places[:6]) + (" and other cities" if len(request.places) > 6 else "")
+                + " qualify")
         if request.unread_place:
             report.issues.append(
                 f"\u201c{request.unread_place}\u201d was not recognised as a city, so colleges were not "
@@ -206,7 +211,7 @@ class PromptManager:
             search, make_crawler, want=want, kind=request.kind, location=request.location,
             target=request.target, names=request.names, max_searches=body.searches,
             workers=body.site_workers, site_seconds=body.site_seconds,
-            control=control, progress=site_progress)
+            control=control, progress=site_progress, request=request)
         report.plan["colleges"] = [c.as_dict() for c in colleges]
         report.searches = len(getattr(search, "queries", [])) or report.searches
         report.pages = max(report.pages, sum(c.pages_read for c in colleges))

@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 
 from .profile import city_from
 from .search_candidates import exclusion_reason
-from .vocab import CITY_CANON, INSTITUTION_WORDS, is_marketing_name
+from .vocab import CITY_CANON, FOREIGN_HOST, INSTITUTION_WORDS, STATES, is_marketing_name, state_from
 
 ACADEMIC_HOST = re.compile(r"\.(?:ac\.[a-z]{2}|edu(?:\.[a-z]{2})?)$", re.I)
 # "Sardar Patel Institute of Technology", "K. J. Somaiya College of Engineering"
@@ -70,6 +70,10 @@ _NOT_A_PLACE = {"the", "a", "an", "faculty", "faculties", "college", "colleges",
                 "these", "those", "all", "any", "this", "that", "me", "us", "you", "list", "data", "details"}
 
 
+EXCLUSION = re.compile(
+    r"\s+(?:except|excluding|exclude|other than|apart from|but not|leave out|skip|avoid|not)\s+", re.I)
+
+
 def _place_word(text):
     """A place named in the request that this reader does not know."""
     for match in PLACE_PHRASE.finditer(text):
@@ -89,12 +93,25 @@ class Request:
     target: str = "faculty"
     names: list[str] = field(default_factory=list)
     departments: list[str] = field(default_factory=list)
+    state: str = ""            # an Indian state the request names; stands for all of its cities
+    excluded_locations: list[str] = field(default_factory=list)
     unfiltered_conditions: bool = False
     unread_place: str = ""     # a place the request names that this reader could not match
 
+    @property
+    def places(self) -> list[str]:
+        """Every city this request accepts: the city named, or the state's cities."""
+        if self.location:
+            places = [CITY_CANON.get(self.location, self.location)]
+        else:
+            places = list(STATES.get(self.state, []))
+        left_out = {c.casefold() for c in self.excluded_locations}
+        return [p for p in places if p.casefold() not in left_out]
+
     def as_dict(self):
         return {"count": self.count, "count_stated": self.count_stated,
-                "kind": self.kind, "location": self.location,
+                "kind": self.kind, "location": self.location, "state": self.state,
+                "excluded_locations": list(self.excluded_locations),
                 "target": self.target, "names": list(self.names),
                 "departments": list(self.departments),
                 "unfiltered_conditions": self.unfiltered_conditions,
@@ -102,11 +119,12 @@ class Request:
 
     def summary(self):
         what = " ".join(w for w in [self.kind, "colleges"] if w)
-        where = f" in {self.location}" if self.location else ""
+        where = f" in {self.location or self.state}" if (self.location or self.state) else ""
         named = f" named: {', '.join(self.names)}" if self.names else ""
+        left_out = f", not {', '.join(self.excluded_locations)}" if self.excluded_locations else ""
         depts = f", {', '.join(self.departments)} only" if self.departments else ""
         want = {"offices": "student office", "both": "faculty and student office"}.get(self.target, "faculty")
-        return f"{self.count} {what}{where}{named}{depts} -> official {want} pages"
+        return f"{self.count} {what}{where}{left_out}{named}{depts} -> official {want} pages"
 
 
 def read_request(prompt):
@@ -127,10 +145,20 @@ def read_request(prompt):
     kind = next((k for k in TYPE_WORDS if re.search(rf"\b{k}\b", low)), "")
     if kind in ("science", "arts") and re.search(r"\bengineering\b", low):
         kind = "engineering"
-    city = city_from(text) or city_from(text.title()) or ""   # people type "pune", not "Pune"
+    # "in Karnataka except Bengaluru": the excluded city must not become the place asked for.
+    parts = EXCLUSION.split(text, maxsplit=1)
+    kept, left_out_text = parts[0], (parts[1] if len(parts) > 1 else "")
+    excluded_locations = []
+    if left_out_text:
+        for piece in re.split(r"\s*(?:,|/| and | or )\s*", left_out_text):
+            place = city_from(piece) or city_from(piece.title()) or ""
+            if place and place not in excluded_locations:
+                excluded_locations.append(CITY_CANON.get(place, place))
+    city = city_from(kept) or city_from(kept.title()) or ""   # people type "pune", not "Pune"
     if city and names and city.casefold() in " ".join(names).casefold():
         city = ""  # the city appeared only inside a college's own name
-    unread_place = "" if (city or names) else _place_word(text)
+    state = "" if city else state_from(kept)
+    unread_place = "" if (city or state or names) else _place_word(kept)
     count_match = re.search(r"\b(\d{1,3})\s+(?:\w+\s+){0,2}?(?:colleges?|universit|institutes?)", low)
     word_match = re.search(r"\b(" + "|".join(COUNT_WORDS) + r")\s+(?:\w+\s+){0,2}?(?:colleges?|universit|institutes?)", low)
     stated = True
@@ -149,7 +177,8 @@ def read_request(prompt):
     wants_faculty = bool(FACULTY_WORDS.search(low)) or not wants_office
     target = "both" if wants_office and wants_faculty else ("offices" if wants_office else "faculty")
     return Request(count=max(1, min(count, 100)), count_stated=stated,
-                   kind=kind, location=city, target=target, names=names,
+                   kind=kind, location=city, state=state, target=target, names=names,
+                   excluded_locations=excluded_locations,
                    departments=departments, unfiltered_conditions=bool(PERSON_CONDITIONS.search(text)),
                    unread_place=unread_place)
 
@@ -252,6 +281,25 @@ def candidate_hosts(results, allow=lambda url: True):
     return [(host, homepage) for _, host, homepage in scored]
 
 
+def _asked_for(request, host):
+    """True when the prompt named this institution, so a foreign site was wanted.
+
+    Matches the site's own label against the name: 'imperial.ac.uk' for
+    'Imperial College London', 'mit.edu' for 'MIT'.
+    """
+    if request is None or not request.names:
+        return False
+    label = re.sub(r"[^a-z0-9]", "", host.casefold().removeprefix("www.").split(".")[0])
+    if len(label) < 3:
+        return False
+    for name in request.names:
+        letters = re.sub(r"[^a-z0-9]", "", name.casefold())
+        initials = "".join(w[0] for w in re.findall(r"[A-Za-z]+", name))
+        if label in letters or label == initials.casefold():
+            return True
+    return False
+
+
 def _requested_city(location):
     city = city_from(location) or location.strip()
     return CITY_CANON.get(city, city)
@@ -278,7 +326,7 @@ def read_identity(page):
     return name, (city_from(text) or ""), text
 
 
-def survey_site(homepage, make_crawler, kind="", location="", target="faculty", budget=45):
+def survey_site(homepage, make_crawler, kind="", location="", target="faculty", budget=45, request=None):
     """Crawl a little of one site and let the extractor answer who is there.
 
     budget is the wall clock, in seconds, this site is allowed. A site that
@@ -335,9 +383,25 @@ def survey_site(homepage, make_crawler, kind="", location="", target="faculty", 
     if not wanted_pages:
         kinds = {"offices": "student office", "both": "faculty or student office"}.get(target, "faculty")
         return None, Rejected(host, f"No page on this site listed {kinds} contacts", name, city, pages_read)
-    if location:
+    # An Indian-college run never returns a foreign university, whatever a search engine offers.
+    if FOREIGN_HOST.search(host) and not _asked_for(request, host):
+        return None, Rejected(host, "Not an Indian institution (foreign academic domain)", name, city, pages_read)
+    places = list(request.places) if request is not None else ([location] if location else [])
+    excluded = [c.casefold() for c in (request.excluded_locations if request is not None else [])]
+    found = CITY_CANON.get(city, city)
+    if excluded and found and found.casefold() in excluded:
+        return None, Rejected(host, f"Site is in {found}, which you asked to leave out", name, city, pages_read)
+    if places:
+        wanted = [_requested_city(p) for p in places]
+        where = request.state if (request is not None and request.state) else " / ".join(wanted)
+        if not found:
+            return None, Rejected(host, f"Site never states {where}", name, city, pages_read)
+        hit = next((w for w in wanted if w.casefold() == found.casefold()), "")
+        if not hit:
+            return None, Rejected(host, f"Site says {found}, not {where}", name, city, pages_read)
+        college.evidence["location"] = f"{hit} read from this site"
+    elif location:
         want = _requested_city(location)
-        found = CITY_CANON.get(city, city)
         if want and found and want.casefold() != found.casefold():
             return None, Rejected(host, f"Site says {found}, not {want}", name, city, pages_read)
         if want and not found:
@@ -354,13 +418,18 @@ def survey_site(homepage, make_crawler, kind="", location="", target="faculty", 
 
 def discover_colleges(search, make_crawler, want=10, kind="", location="", target="faculty",
                       queries=(), names=(), max_searches=12, max_sites=90, workers=6,
-                      site_seconds=45, control=lambda: None, progress=lambda event: None):
+                      site_seconds=45, control=lambda: None, progress=lambda event: None,
+                      request=None):
     """Search, then prove each site by crawling it. Returns (colleges, rejected, notes)."""
     notes, results, searched = [], [], []
     if names:  # named colleges: look them up, do not browse a city list
         planned = [q for n in names for q in (f"{n} official website", f"{n} faculty")]
     else:
-        planned = site_queries(kind, location, queries)
+            # A state is searched city by city so every part of it is reached.
+            places = (request.places if request is not None else []) or [location]
+            per_place = [site_queries(kind, p, queries) for p in places[:6]]
+            planned = list(dict.fromkeys(q for group in zip(*per_place) for q in group)) if per_place else []
+            planned += [q for group in per_place for q in group if q not in planned]
 
     def run_search(query):
         control()
@@ -411,7 +480,7 @@ def discover_colleges(search, make_crawler, want=10, kind="", location="", targe
                 return
             report_counts(f"Reading {host}")
             try:
-                college, reject = survey_site(homepage, make_crawler, kind, location, target,
+                college, reject = survey_site(homepage, make_crawler, kind, location, target, request=request,
                                               budget=site_seconds)
             except Exception as exc:
                 college, reject = None, Rejected(host, f"Site could not be read: {exc}"[:200])
